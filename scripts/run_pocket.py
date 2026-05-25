@@ -81,8 +81,7 @@ def run_pocket(
     output_dir=None,
     plot=False,
     save_plot=None,
-    args_residues_per_segment=2,
-    args_threshold=2,
+    args_ligand_size=3,
 ):
     print(f"\n{'='*60}")
     print(f"  Pocket Mapping: {os.path.basename(pdb_path)}")
@@ -168,50 +167,63 @@ def run_pocket(
     if plot or save_plot:
         _plot_sequence(per_residue, flat_chain, pdb_path, save_plot)
 
-    # ── Catena di qubit ───────────────────────────────────────────────────
-    from amino_lattice.qubit_chain import (
-        build_qubit_chain, print_qubit_chain, qubit_chain_to_bitstring
-    )
+    # ── Catena di qubit (Quantum Encoding) ────────────────────────────────
+    from amino_lattice.qubit_chain import build_qubit_chain, print_qubit_chain
+
+    # 1. Calcolo globale dei minimi e massimi per idrofobicità e H-Bond
+    h_vals, hb_vals = [], []
+    for s in flat_chain:
+        t = s["type"]
+        intensity = s.get("intensity", 1.0)
+        if t in ["Hydrophobe", "Aromatic"]:
+            h_vals.append(intensity)
+            hb_vals.append(0.0)
+        elif t in ["HBondDonor", "HBondAcceptor"]:
+            h_vals.append(0.0)
+            hb_vals.append(intensity)
+        else:
+            h_vals.append(0.0)
+            hb_vals.append(0.0)
+            
+    h_min = min(h_vals) if h_vals else 0.0
+    h_max = max(h_vals) if h_vals else 1.0
+    hb_min = min(hb_vals) if hb_vals else 0.0
+    hb_max = max(hb_vals) if hb_vals else 1.0
 
     print(f"\n{'─'*60}")
-    print(f"  Catena di Qubit  (segmenti da {args_residues_per_segment} residui, soglia HBD+HBA ≥ {args_threshold})")
+    print(f"  Quantum Encoding  (Sliding window ligand size = {args_ligand_size})")
+    print(f"  h_range: [{h_min:.2f}, {h_max:.2f}], hb_range: [{hb_min:.2f}, {hb_max:.2f}]")
     print(f"{'─'*60}")
 
     segments = build_qubit_chain(
         flat_chain,
-        residues_per_segment=args_residues_per_segment,
-        threshold=args_threshold,
+        ligand_size=args_ligand_size,
+        h_min=h_min, h_max=h_max, hb_min=hb_min, hb_max=hb_max
     )
+    
     print_qubit_chain(segments)
 
     if output_dir:
         # Salva qubit chain come JSON
         qubit_data = {
-            "residues_per_segment": args_residues_per_segment,
-            "threshold": args_threshold,
-            "bitstring": qubit_chain_to_bitstring(segments),
-            "n_qubits": len(segments),
+            "ligand_size": args_ligand_size,
+            "h_range": [h_min, h_max],
+            "hb_range": [hb_min, hb_max],
+            "n_segments": len(segments),
             "segments": [
                 {
                     "segment_idx": s.segment_idx,
-                    "qubit": s.qubit,
-                    "n_polar": s.n_polar,
-                    "n_sites": s.n_sites,
-                    "residues": s.residues,
+                    "first_encoding_state": s.first_encoding_state,
+                    "second_encoding_amplitudes": s.second_encoding_amplitudes,
+                    "residues": list(set([site["residue"] for site in s.sites])),
                 }
                 for s in segments
             ],
         }
-        qjson_path = os.path.join(output_dir, "qubit_chain.json")
+        qjson_path = os.path.join(output_dir, "quantum_chain.json")
         with open(qjson_path, "w") as f:
             json.dump(qubit_data, f, indent=2)
-        print(f"\n  Qubit JSON salvato in: {qjson_path}")
-
-        # Salva bitstring come file di testo plain (comodo per altri tool)
-        btxt_path = os.path.join(output_dir, "bitstring.txt")
-        with open(btxt_path, "w") as f:
-            f.write(qubit_chain_to_bitstring(segments) + "\n")
-        print(f"  Bitstring .txt salvato in: {btxt_path}")
+        print(f"\n  Quantum JSON salvato in: {qjson_path}")
 
     return flat_chain, per_residue, segments
 
@@ -443,10 +455,8 @@ if __name__ == "__main__":
                         help="Mostra visualizzazione interattiva")
     parser.add_argument("--save-plot", default=None,
                         help="Salva il plot come PNG")
-    parser.add_argument("--segment-size", type=int, default=2,
-                        help="Residui per segmento/qubit (default 2)")
-    parser.add_argument("--threshold", type=int, default=2,
-                        help="HBD+HBA minimi per qubit=|1> (default 2)")
+    parser.add_argument("--ligand-size", type=int, default=3,
+                        help="Dimensione del ligando in siti (default 3)")
     args = parser.parse_args()
 
     run_pocket(
@@ -456,6 +466,5 @@ if __name__ == "__main__":
         output_dir=args.output,
         plot=args.plot,
         save_plot=args.save_plot,
-        args_residues_per_segment=args.segment_size,
-        args_threshold=args.threshold,
+        args_ligand_size=args.ligand_size,
     )

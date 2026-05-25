@@ -1,126 +1,99 @@
 """
-Qubit Chain
-===========
-Converte la sequenza flat di siti farmacofori in una catena di qubit binari.
-
-Logica:
-  1. La flat_chain (ordinata per distanza dal centroide) viene suddivisa
-     in segmenti di N residui contigui.
-  2. Per ogni segmento si contano i siti di tipo HBondDonor o HBondAcceptor.
-  3. Se il conteggio >= soglia → qubit = |1⟩  (sito di interazione attivo)
-     altrimenti              → qubit = |0⟩  (sito inattivo)
-
-Parametri default (modificabili):
-  - residues_per_segment = 2
-  - threshold            = 2  (HBD + HBA >= 2 → |1⟩)
+Qubit Chain (Quantum Encoding)
+==============================
+Suddivide la sequenza flat di siti in segmenti (sliding window) della stessa
+dimensione del ligando e applica il First e Second Encoding quantistico.
 """
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List
+from typing import List, Dict
 
-
-POLAR_TYPES = {"HBondDonor", "HBondAcceptor"}
+from amino_lattice.quantum_encoding import first_encoding, second_encoding
 
 
 @dataclass
 class QubitSegment:
-    """Un segmento = un qubit."""
-    segment_idx: int           # indice del segmento (0-based)
-    residues: List[str]        # nomi dei residui nel segmento (es. ["A188_CYS", "A204_HIS"])
-    n_sites: int               # numero totale di siti nel segmento
-    n_polar: int               # numero di siti HBD + HBA nel segmento
-    qubit: int                 # 0 o 1
+    """Un segmento della proteina di dimensione pari al ligando."""
+    segment_idx: int
+    sites: List[dict]
+    first_encoding_state: str           # es. "100111"
+    second_encoding_amplitudes: List[Dict[str, float]] # lista di {a,b,c,d} per ogni sito
 
-    def __repr__(self):
-        state = "|1⟩" if self.qubit == 1 else "|0⟩"
-        return (f"Seg{self.segment_idx:02d} {state}  "
-                f"residui={self.residues}  "
-                f"polar={self.n_polar}/{self.n_sites}")
+
+def get_h_hb_intensities(site: dict) -> tuple[float, float]:
+    """Ritorna (h, hb) per un sito."""
+    t = site["type"]
+    intensity = site.get("intensity", 1.0)
+    
+    if t in ["Hydrophobe", "Aromatic"]:
+        return intensity, 0.0
+    elif t in ["HBondDonor", "HBondAcceptor"]:
+        return 0.0, intensity
+    else:
+        return 0.0, 0.0
 
 
 def build_qubit_chain(
     flat_chain: List[dict],
-    residues_per_segment: int = 2,
-    threshold: int = 2,
+    ligand_size: int,
+    h_min: float,
+    h_max: float,
+    hb_min: float,
+    hb_max: float
 ) -> List[QubitSegment]:
     """
-    Costruisce la catena di qubit dalla flat_chain.
-
-    Parameters
-    ----------
-    flat_chain : List[dict]
-        Output di run_pocket — lista di siti con chiavi
-        "residue", "type", "i", "j", "intensity".
-    residues_per_segment : int
-        Numero di residui contigui che formano un segmento.
-    threshold : int
-        Numero minimo di siti HBD+HBA nel segmento per avere qubit=1.
-
-    Returns
-    -------
-    List[QubitSegment]
+    Crea la catena di segmenti e codifica gli stati quantistici.
+    Implementa la logica di 'protein shift' (sliding window) del paper.
     """
-    # ── Raggruppa i siti per residuo (mantenendo l'ordine spaziale) ───────
-    residue_order = []   # lista ordinata di nomi residuo (senza duplicati)
-    sites_by_residue = {}
-
-    for site in flat_chain:
-        res = site["residue"]
-        if res not in sites_by_residue:
-            sites_by_residue[res] = []
-            residue_order.append(res)
-        sites_by_residue[res].append(site)
-
-    # ── Suddividi i residui in segmenti di dimensione fissa ───────────────
-    n_residues = len(residue_order)
-    segments: List[QubitSegment] = []
-    seg_idx = 0
-
-    for start in range(0, n_residues, residues_per_segment):
-        end = min(start + residues_per_segment, n_residues)
-        seg_residues = residue_order[start:end]
-
-        # Raccogli tutti i siti del segmento
-        seg_sites = []
-        for res in seg_residues:
-            seg_sites.extend(sites_by_residue[res])
-
-        n_sites = len(seg_sites)
-        n_polar = sum(1 for s in seg_sites if s["type"] in POLAR_TYPES)
-        qubit = 1 if n_polar >= threshold else 0
-
+    segments = []
+    n_sites = len(flat_chain)
+    
+    if n_sites < ligand_size:
+        return []
+        
+    for i in range(n_sites - ligand_size + 1):
+        segment_sites = flat_chain[i:i+ligand_size]
+        
+        first_enc_str = ""
+        second_enc_amps = []
+        
+        for site in segment_sites:
+            h, hb = get_h_hb_intensities(site)
+            
+            # First encoding (Grover Search) - 2 qubit per sito
+            q_str = first_encoding(h, hb, h_min, h_max, hb_min, hb_max)
+            first_enc_str += q_str
+            
+            # Second encoding (Euclidean distance) - 4 ampiezze per sito
+            amps = second_encoding(h, hb, h_min, h_max, hb_min, hb_max)
+            second_enc_amps.append(amps)
+            
         segments.append(QubitSegment(
-            segment_idx=seg_idx,
-            residues=seg_residues,
-            n_sites=n_sites,
-            n_polar=n_polar,
-            qubit=qubit,
+            segment_idx=i,
+            sites=segment_sites,
+            first_encoding_state=first_enc_str,
+            second_encoding_amplitudes=second_enc_amps
         ))
-        seg_idx += 1
-
+        
     return segments
 
 
-def qubit_chain_to_bitstring(segments: List[QubitSegment]) -> str:
-    """Restituisce la catena come stringa binaria, es. '10110100...'"""
-    return "".join(str(s.qubit) for s in segments)
-
-
 def print_qubit_chain(segments: List[QubitSegment]):
-    """Stampa la catena di qubit in modo leggibile."""
-    print(f"\n  {'Seg':5s}  {'Qubit':6s}  {'Polar/Tot':10s}  Residui")
-    print(f"  {'─'*5}  {'─'*6}  {'─'*10}  {'─'*30}")
+    """Stampa i segmenti codificati quantisticamente."""
+    if not segments:
+        print("Nessun segmento trovato (ligand_size > siti totali?).")
+        return
+        
+    print(f"\n  {'Seg':5s}  {'First Encoding':20s}  Residui Inclusi")
+    print(f"  {'─'*5}  {'─'*20}  {'─'*30}")
     for s in segments:
-        state = "|1⟩" if s.qubit == 1 else "|0⟩"
-        res_str = ", ".join(s.residues)
-        print(f"  {s.segment_idx:5d}  {state:6s}  "
-              f"{s.n_polar:3d}/{s.n_sites:<6d}  {res_str}")
-
-    bitstring = qubit_chain_to_bitstring(segments)
-    n1 = bitstring.count("1")
-    n0 = bitstring.count("0")
-    print(f"\n  Bitstring : {bitstring}")
-    print(f"  Lunghezza : {len(bitstring)} qubit")
-    print(f"  |1⟩       : {n1}  ({100*n1/len(bitstring):.1f}%)")
-    print(f"  |0⟩       : {n0}  ({100*n0/len(bitstring):.1f}%)")
+        residues = []
+        for site in s.sites:
+            res = site["residue"].split("_")[0]
+            if res not in residues:
+                residues.append(res)
+        res_str = ", ".join(residues)
+        print(f"  {s.segment_idx:5d}  |{s.first_encoding_state}⟩{' '*max(0, 18-len(s.first_encoding_state))}  {res_str}")
+        
+    print(f"\n  Totale segmenti (shift): {len(segments)}")

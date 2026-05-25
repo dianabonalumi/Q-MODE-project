@@ -4,7 +4,8 @@ Step 2 — Feature Extraction
 Estrae feature farmacofore da un amminoacido usando RDKit:
   - Farmacofori (MolChemicalFeatures): HBD, HBA, Hydrophobe, Aromatic, PosIonizable, NegIonizable
   - H-bond donor / acceptor (Lipinski)
-  - Idrofobicità (LogP per atomo tramite Crippen contributions)
+    - Idrofobicità (LogP per atomo tramite Crippen contributions)
+    - Legami idrogeno (intensità calcolata in modo continuo, simulando un'energia)
 
 Ogni feature è associata alle coordinate 3D dell'atomo (o centroide del gruppo).
 """
@@ -65,6 +66,14 @@ class AtomFeature:
 # Funzione principale
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _compute_pseudo_hbond_intensity(coords: np.ndarray) -> float:
+    """
+    Placeholder: calcola un'intensità continua fittizia ma deterministica
+    per un legame a idrogeno basandosi sulle coordinate spaziali.
+    Ritorna un valore tra 1.0 e 5.0.
+    """
+    return 1.0 + float(np.abs(np.sum(coords)) % 4.0)
+
 def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
     """
     Dato un oggetto RDKit Mol (con o senza coordinate 3D), restituisce
@@ -117,10 +126,15 @@ def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
                 continue
             atom_ids = list(f.GetAtomIds())
             centroid = positions[atom_ids].mean(axis=0)
+            intensity = 1.0
+            if fname in ("HBondDonor", "HBondAcceptor"):
+                intensity = _compute_pseudo_hbond_intensity(centroid)
+            
             features.append(AtomFeature(
                 feature_type=fname,
                 coords=centroid,
                 atom_indices=atom_ids,
+                intensity=intensity,
             ))
     else:
         # fallback manuale se la factory non è disponibile
@@ -161,11 +175,13 @@ def _manual_hbond_features(mol: Mol, positions: np.ndarray) -> List[AtomFeature]
 
         # Donor: N o O con almeno un H
         if symbol in ("N", "O") and atom.GetTotalNumHs() > 0:
-            features.append(AtomFeature("HBondDonor", coord, [idx]))
+            intensity = _compute_pseudo_hbond_intensity(coord)
+            features.append(AtomFeature("HBondDonor", coord, [idx], intensity=intensity))
 
         # Acceptor: N o O con lone pair (approssimazione: tutti N e O)
         if symbol in ("N", "O", "F"):
-            features.append(AtomFeature("HBondAcceptor", coord, [idx]))
+            intensity = _compute_pseudo_hbond_intensity(coord)
+            features.append(AtomFeature("HBondAcceptor", coord, [idx], intensity=intensity))
 
     return features
 
