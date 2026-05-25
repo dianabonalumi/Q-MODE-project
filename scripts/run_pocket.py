@@ -1,17 +1,13 @@
 """
-Script principale: PDB tasca → catena di siti di interazione
-=============================================================
+Script principale: PDB tasca → sequenza flat di siti di interazione
+====================================================================
+Ogni residuo ha il suo reticolo locale indipendente.
+I residui vengono ordinati per distanza dal centroide della tasca.
+L'output è una sequenza flat: [(i,j,tipo), ...] per tutti i siti.
 
 Uso:
-    python scripts/run_pocket.py --pdb data/raw/1a08_pocket.pdb
     python scripts/run_pocket.py --pdb data/raw/1a08_pocket.pdb --plot
     python scripts/run_pocket.py --pdb data/raw/1a08_pocket.pdb --output data/processed/
-
-Cosa fa:
-  1. Legge il PDB della tasca → estrae i residui
-  2. Per ogni residuo esegue la pipeline (feature → K siti → reticolo 2D)
-  3. Aggrega tutti i siti in una catena unica della tasca
-  4. Stampa e visualizza la catena
 """
 
 import argparse
@@ -24,8 +20,12 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from amino_lattice import AminoLatticePipeline
-from amino_lattice.pdb_reader import load_residues_from_pdb, AMINO_SMILES
+from amino_lattice.pdb_reader import (
+    load_residues_from_pdb,
+    compute_pocket_centroid,
+    sort_residues_by_distance,
+    AMINO_SMILES,
+)
 from amino_lattice.feature_extraction import extract_features
 from amino_lattice.site_selection import choose_k, select_representative_sites
 from amino_lattice.lattice_fitting import fit_to_lattice_2d
@@ -33,143 +33,204 @@ from amino_lattice.snapping import snap_to_lattice
 from amino_lattice.labeling import label_sites, LabeledSite
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+
+def process_residue(rec, k_strategy, max_k):
+    """
+    Esegue la pipeline locale su un singolo residuo.
+    Restituisce la lista di LabeledSite con coordinate (i,j) locali,
+    oppure None se il residuo non può essere processato.
+    """
+    if rec.mol is None:
+        return None
+
+    try:
+        # Step 2: feature extraction (usa coord 3D reali dal PDB)
+        features = extract_features(rec.mol, embed_3d=False)
+        if not features:
+            warnings.warn(f"  {rec.label}: nessuna feature estratta, skip")
+            return None
+
+        # Step 3: scelta K e selezione siti
+        k = choose_k(features, mol=rec.mol, strategy=k_strategy,
+                     max_k=max_k, min_k=1)
+        sites = select_representative_sites(features, k)
+
+        # Step 4: fitting geometrico LOCALE (PCA sul solo residuo)
+        coords_2d = fit_to_lattice_2d(sites, method="pca", lattice_spacing=1.5)
+
+        # Step 5: snapping al reticolo locale
+        lattice_nodes = snap_to_lattice(coords_2d, strategy="hungarian")
+
+        # Step 6: labeling
+        labeled = label_sites(sites, lattice_nodes, mode="one_hot")
+
+        return labeled
+
+    except Exception as e:
+        warnings.warn(f"  {rec.label}: errore — {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 def run_pocket(
-    pdb_path: str,
-    k_strategy: str = "active_features",
-    projection: str = "pca",
-    label_mode: str = "one_hot",
-    max_k: int = 6,
-    output_dir: str = None,
-    plot: bool = False,
-    save_plot: str = None,
+    pdb_path,
+    k_strategy="active_features",
+    max_k=6,
+    output_dir=None,
+    plot=False,
+    save_plot=None,
+    args_residues_per_segment=2,
+    args_threshold=2,
 ):
     print(f"\n{'='*60}")
     print(f"  Pocket Mapping: {os.path.basename(pdb_path)}")
     print(f"{'='*60}")
 
-    # ── Step 1: Lettura PDB ───────────────────────────────────────────────
+    # ── Step 1: lettura PDB ───────────────────────────────────────────────
     print("\n[1/4] Lettura residui dal PDB...")
     residues = load_residues_from_pdb(pdb_path, skip_water=True)
-    print(f"      Trovati {len(residues)} residui: "
-          + ", ".join(f"{r.chain_id}{r.res_seq}({r.res_name})" for r in residues))
+    print(f"      {len(residues)} residui trovati")
 
-    # ── Step 2-6: Pipeline per ogni residuo ──────────────────────────────
-    print(f"\n[2/4] Estrazione feature e mapping per ogni residuo...")
-    all_sites = []       # AtomFeature aggregati di tutti i residui
-    residue_labels = []  # per tracciare a quale residuo appartiene ogni sito
+    # ── Step 2: ordinamento spaziale ──────────────────────────────────────
+    print("\n[2/4] Ordinamento per distanza dal centroide della tasca...")
+    centroid = compute_pocket_centroid(residues)
+    residues = sort_residues_by_distance(residues, centroid)
+    print(f"      Centroide tasca: ({centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}) Å")
+    print(f"      Ordine: " + " → ".join(r.label for r in residues[:5]) + " → ...")
 
-    pipeline = AminoLatticePipeline(
-        k_strategy=k_strategy,
-        projection_method=projection,
-        label_mode=label_mode,
-        max_k=max_k,
-        embed_3d=False,   # usiamo le coordinate 3D già dal PDB
-    )
+    # ── Step 3: pipeline locale per ogni residuo ──────────────────────────
+    print(f"\n[3/4] Pipeline locale per ogni residuo (reticolo indipendente)...")
 
-    residue_results = []
+    flat_chain = []          # sequenza flat finale: lista di dict
+    per_residue = []         # per visualizzazione e debug
+
     for rec in residues:
-        if rec.mol is None:
-            warnings.warn(f"  Skipped {rec.label}: mol non costruita")
+        labeled = process_residue(rec, k_strategy, max_k)
+        if labeled is None:
             continue
 
-        smiles = AMINO_SMILES.get(rec.res_name)
-        if not smiles:
-            continue
+        print(f"      {rec.label:20s} → {len(labeled)} siti: "
+              + "  ".join(f"({ls.i:2d},{ls.j:2d}) {ls.feature_type[:3]}"
+                          for ls in labeled))
 
-        try:
-            # Estrai feature dalla mol con coordinate PDB reali
-            features = extract_features(rec.mol, embed_3d=False)
-            if not features:
-                warnings.warn(f"  {rec.label}: nessuna feature, skip")
-                continue
-
-            k = choose_k(features, mol=rec.mol, strategy=k_strategy,
-                         max_k=max_k, min_k=1)
-            sites = select_representative_sites(features, k)
-
-            residue_results.append({
-                "record": rec,
-                "features": features,
-                "sites": sites,
+        for ls in labeled:
+            flat_chain.append({
+                "residue":   rec.label,
+                "res_name":  rec.res_name,
+                "res_seq":   rec.res_seq,
+                "chain_id":  rec.chain_id,
+                "i":         ls.i,
+                "j":         ls.j,
+                "type":      ls.feature_type,
+                "intensity": round(ls.intensity, 3),
             })
 
-            for s in sites:
-                all_sites.append(s)
-                residue_labels.append(rec.label)
+        per_residue.append({"record": rec, "labeled": labeled})
 
-            print(f"      {rec.label:20s} → {k} siti  "
-                  f"({', '.join(set(s.feature_type[:3] for s in sites))})")
-
-        except Exception as e:
-            warnings.warn(f"  {rec.label}: errore — {e}")
-            continue
-
-    if not all_sites:
-        print("ERRORE: nessun sito estratto. Controlla il file PDB.")
-        return
-
-    # ── Fitting globale sul reticolo 2D ──────────────────────────────────
-    print(f"\n[3/4] Fitting globale sul reticolo 2D ({projection.upper()})...")
-    total_k = len(all_sites)
-
-    coords_2d = fit_to_lattice_2d(all_sites, method=projection, lattice_spacing=2.0)
-    lattice_nodes = snap_to_lattice(coords_2d, strategy="hungarian")
-    labeled = label_sites(all_sites, lattice_nodes, mode=label_mode)
-
-    # ── Output ────────────────────────────────────────────────────────────
-    print(f"\n[4/4] Risultati")
+    # ── Step 4: output ────────────────────────────────────────────────────
+    print(f"\n[4/4] Sequenza flat finale")
     print(f"{'─'*60}")
-    print(f"  Residui processati : {len(residue_results)}")
-    print(f"  Siti totali (K)    : {total_k}")
-    print(f"\n  Catena di siti della tasca:")
-    print(f"  {'Sito':5s}  {'Residuo':20s}  {'(i, j)':10s}  Tipo")
-    print(f"  {'─'*5}  {'─'*20}  {'─'*10}  {'─'*15}")
-    for idx, (ls, res_label) in enumerate(zip(labeled, residue_labels)):
-        print(f"  {idx+1:5d}  {res_label:20s}  ({ls.i:3d},{ls.j:3d})    {ls.feature_type}")
+    print(f"  Residui processati : {len(per_residue)}")
+    print(f"  Siti totali        : {len(flat_chain)}")
+    print(f"\n  idx  {'Residuo':20s}  (i, j)     Tipo")
+    print(f"  {'─'*4}  {'─'*20}  {'─'*8}  {'─'*15}")
+    for idx, s in enumerate(flat_chain):
+        print(f"  {idx+1:4d}  {s['residue']:20s}  ({s['i']:3d},{s['j']:3d})  {s['type']}")
 
-    chain = [(ls.i, ls.j, ls.feature_type) for ls in labeled]
-
-    # ── Salva output ──────────────────────────────────────────────────────
+    # ── Salvataggio ───────────────────────────────────────────────────────
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
+        import pandas as pd
 
         # JSON
-        output = {
+        result = {
             "pdb": os.path.basename(pdb_path),
-            "n_residues": len(residue_results),
-            "n_sites": total_k,
-            "chain": [
-                {"site_idx": i, "residue": res_label, "i": ls.i, "j": ls.j,
-                 "type": ls.feature_type, "intensity": round(ls.intensity, 3)}
-                for i, (ls, res_label) in enumerate(zip(labeled, residue_labels))
-            ]
+            "pocket_centroid": centroid.tolist(),
+            "n_residues": len(per_residue),
+            "n_sites_total": len(flat_chain),
+            "ordering": "spatial_distance_from_centroid",
+            "flat_chain": flat_chain,
         }
         json_path = os.path.join(output_dir, "pocket_chain.json")
         with open(json_path, "w") as f:
-            json.dump(output, f, indent=2)
+            json.dump(result, f, indent=2)
         print(f"\n  JSON salvato in: {json_path}")
 
         # CSV
-        import pandas as pd
-        df = pd.DataFrame([
-            {"site_idx": i, "residue": res_label, "i": ls.i, "j": ls.j,
-             "type": ls.feature_type, "intensity": round(ls.intensity, 3)}
-            for i, (ls, res_label) in enumerate(zip(labeled, residue_labels))
-        ])
+        df = pd.DataFrame(flat_chain)
         csv_path = os.path.join(output_dir, "pocket_chain.csv")
-        df.to_csv(csv_path, index=False)
+        df.to_csv(csv_path, index=True, index_label="site_idx")
         print(f"  CSV salvato in:  {csv_path}")
 
     # ── Visualizzazione ───────────────────────────────────────────────────
     if plot or save_plot:
-        _plot_pocket(labeled, residue_labels, pdb_path, save_plot)
+        _plot_sequence(per_residue, flat_chain, pdb_path, save_plot)
 
-    return labeled, residue_labels
+    # ── Catena di qubit ───────────────────────────────────────────────────
+    from amino_lattice.qubit_chain import (
+        build_qubit_chain, print_qubit_chain, qubit_chain_to_bitstring
+    )
+
+    print(f"\n{'─'*60}")
+    print(f"  Catena di Qubit  (segmenti da {args_residues_per_segment} residui, soglia HBD+HBA ≥ {args_threshold})")
+    print(f"{'─'*60}")
+
+    segments = build_qubit_chain(
+        flat_chain,
+        residues_per_segment=args_residues_per_segment,
+        threshold=args_threshold,
+    )
+    print_qubit_chain(segments)
+
+    if output_dir:
+        # Salva qubit chain come JSON
+        qubit_data = {
+            "residues_per_segment": args_residues_per_segment,
+            "threshold": args_threshold,
+            "bitstring": qubit_chain_to_bitstring(segments),
+            "n_qubits": len(segments),
+            "segments": [
+                {
+                    "segment_idx": s.segment_idx,
+                    "qubit": s.qubit,
+                    "n_polar": s.n_polar,
+                    "n_sites": s.n_sites,
+                    "residues": s.residues,
+                }
+                for s in segments
+            ],
+        }
+        qjson_path = os.path.join(output_dir, "qubit_chain.json")
+        with open(qjson_path, "w") as f:
+            json.dump(qubit_data, f, indent=2)
+        print(f"\n  Qubit JSON salvato in: {qjson_path}")
+
+        # Salva bitstring come file di testo plain (comodo per altri tool)
+        btxt_path = os.path.join(output_dir, "bitstring.txt")
+        with open(btxt_path, "w") as f:
+            f.write(qubit_chain_to_bitstring(segments) + "\n")
+        print(f"  Bitstring .txt salvato in: {btxt_path}")
+
+    return flat_chain, per_residue, segments
 
 
-def _plot_pocket(labeled, residue_labels, pdb_path, save_path=None):
+# ─────────────────────────────────────────────────────────────────────────────
+# Visualizzazione
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
+    """
+    Tre figure separate, ciascuna salvata/mostrata indipendentemente:
+      Fig 1 — Griglia di reticoli locali (6 per riga), uno per residuo
+      Fig 2 — Sequenza flat: heatmap tipo × posizione
+      Fig 3 — Barchart composizione farmacofori per residuo
+    """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
+    import matplotlib.gridspec as gridspec
+    from collections import Counter
 
     COLOR_MAP = {
         "HBondDonor":    "#2196F3",
@@ -179,91 +240,222 @@ def _plot_pocket(labeled, residue_labels, pdb_path, save_path=None):
         "PosIonizable":  "#F44336",
         "NegIonizable":  "#00BCD4",
     }
+    TYPE_SHORT = {
+        "HBondDonor": "HBD", "HBondAcceptor": "HBA",
+        "Hydrophobe": "Hyd", "Aromatic": "Aro",
+        "PosIonizable": "Pos", "NegIonizable": "Neg",
+    }
+    FEAT_TYPES = list(COLOR_MAP.keys())
+    fname = os.path.splitext(os.path.basename(pdb_path))[0]
 
-    fig, ax = plt.subplots(figsize=(12, 10))
+    # ═════════════════════════════════════════════════════════════════════
+    # FIGURA 1 — Griglia di reticoli locali (N_COLS per riga)
+    # ═════════════════════════════════════════════════════════════════════
+    N_COLS = 6
+    n_res  = len(per_residue)
+    n_rows = (n_res + N_COLS - 1) // N_COLS
 
-    # Griglia di sfondo
-    all_i = [ls.i for ls in labeled]
-    all_j = [ls.j for ls in labeled]
-    margin = 2
-    for gi in range(min(all_i) - margin, max(all_i) + margin + 1):
-        for gj in range(min(all_j) - margin, max(all_j) + margin + 1):
-            ax.plot(gj, gi, ".", color="#eeeeee", markersize=3, zorder=0)
+    fig1, axes = plt.subplots(
+        n_rows, N_COLS,
+        figsize=(N_COLS * 3.2, n_rows * 3.2),
+        squeeze=False,
+    )
+    fig1.suptitle(
+        f"Reticoli locali — {fname}\n"
+        f"(ordinati per distanza dal centroide, sinistra-alto = più vicino)",
+        fontsize=13, fontweight="bold", y=1.01,
+    )
 
-    # Connessioni (catena)
-    for k in range(len(labeled) - 1):
-        i1, j1 = labeled[k].i, labeled[k].j
-        i2, j2 = labeled[k+1].i, labeled[k+1].j
-        ax.plot([j1, j2], [i1, i2], "-", color="#cccccc", lw=0.8, zorder=1, alpha=0.5)
+    for idx, entry in enumerate(per_residue):
+        row, col = divmod(idx, N_COLS)
+        ax = axes[row][col]
+        rec     = entry["record"]
+        labeled = entry["labeled"]
 
-    # Raggruppa per residuo per colorare il bordo
-    unique_residues = list(dict.fromkeys(residue_labels))
-    res_colors = plt.cm.Set3(np.linspace(0, 1, len(unique_residues)))
-    res_color_map = {r: res_colors[i] for i, r in enumerate(unique_residues)}
+        all_i = [ls.i for ls in labeled]
+        all_j = [ls.j for ls in labeled]
+        margin = 1
+        i_min, i_max = min(all_i) - margin, max(all_i) + margin
+        j_min, j_max = min(all_j) - margin, max(all_j) + margin
 
-    # Siti
-    for ls, res_label in zip(labeled, residue_labels):
-        fcolor = COLOR_MAP.get(ls.feature_type, "#607D8B")
-        ecolor = res_color_map[res_label]
-        ax.scatter(ls.j, ls.i, s=250, color=fcolor, zorder=3,
-                   edgecolors=ecolor, linewidths=3)
-        ax.annotate(
-            ls.feature_type[:3],
-            (ls.j, ls.i), fontsize=6, ha="center", va="center",
-            color="white", fontweight="bold", zorder=4,
-        )
+        # Griglia di sfondo
+        for gi in range(i_min, i_max + 1):
+            for gj in range(j_min, j_max + 1):
+                ax.plot(gj, gi, ".", color="#e8e8e8", markersize=5, zorder=0)
 
-    # Legenda tipi farmacofori
-    feat_patches = [mpatches.Patch(color=c, label=ft)
-                    for ft, c in COLOR_MAP.items()]
-    legend1 = ax.legend(handles=feat_patches, title="Feature type",
-                        loc="upper left", fontsize=8)
-    ax.add_artist(legend1)
+        # Connessioni intra-residuo
+        for k in range(len(labeled) - 1):
+            ax.plot(
+                [labeled[k].j, labeled[k+1].j],
+                [labeled[k].i, labeled[k+1].i],
+                "-", color="#cccccc", lw=1.5, zorder=1,
+            )
 
-    ax.set_title(f"Tasca di interazione — {os.path.basename(pdb_path)}\n"
-                 f"{len(unique_residues)} residui, {len(labeled)} siti sul reticolo 2D",
-                 fontsize=12)
-    ax.set_xlabel("j (colonna reticolo)")
-    ax.set_ylabel("i (riga reticolo)")
-    ax.set_aspect("equal")
+        # Siti
+        for ls in labeled:
+            color = COLOR_MAP.get(ls.feature_type, "#607D8B")
+            ax.scatter(ls.j, ls.i, s=320, color=color,
+                       zorder=3, edgecolors="white", linewidths=1.8)
+            ax.text(ls.j, ls.i, TYPE_SHORT.get(ls.feature_type, "?"),
+                    ha="center", va="center", fontsize=7,
+                    color="white", fontweight="bold", zorder=4)
 
-    plt.tight_layout()
+        ax.set_title(f"{rec.label}", fontsize=8, fontweight="bold", pad=4)
+        ax.set_xlim(j_min - 0.8, j_max + 0.8)
+        ax.set_ylim(i_min - 0.8, i_max + 0.8)
+        ax.set_aspect("equal")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.spines[["top","right","left","bottom"]].set_visible(False)
+
+    # Nascondi assi vuoti nell'ultima riga
+    for idx in range(n_res, n_rows * N_COLS):
+        row, col = divmod(idx, N_COLS)
+        axes[row][col].set_visible(False)
+
+    # Legenda comune in basso
+    patches = [mpatches.Patch(color=c, label=t) for t, c in COLOR_MAP.items()]
+    fig1.legend(handles=patches, loc="lower center", ncol=6,
+                fontsize=9, bbox_to_anchor=(0.5, -0.03),
+                frameon=True, edgecolor="#dddddd")
+
+    fig1.tight_layout()
+    if save_path:
+        p = save_path.replace(".png", "_lattices.png")
+        fig1.savefig(p, dpi=150, bbox_inches="tight")
+        print(f"  Plot 1 (reticoli) salvato in: {p}")
+
+    # ═════════════════════════════════════════════════════════════════════
+    # FIGURA 2 — Heatmap sequenza flat: righe=tipi, colonne=indice sito
+    # ═════════════════════════════════════════════════════════════════════
+    n_sites = len(flat_chain)
+    n_types = len(FEAT_TYPES)
+    matrix  = np.zeros((n_types, n_sites))
+
+    for col_idx, s in enumerate(flat_chain):
+        row_idx = FEAT_TYPES.index(s["type"]) if s["type"] in FEAT_TYPES else 0
+        matrix[row_idx, col_idx] = 1.0
+
+    fig2, ax2 = plt.subplots(figsize=(max(14, n_sites * 0.22), 4))
+
+    # Disegna ogni cella colorata manualmente per usare i colori farmacofori
+    for r, ft in enumerate(FEAT_TYPES):
+        for c in range(n_sites):
+            if matrix[r, c] > 0:
+                ax2.add_patch(plt.Rectangle(
+                    (c - 0.5, r - 0.5), 1, 1,
+                    color=COLOR_MAP[ft], alpha=0.85, zorder=2,
+                ))
+
+    # Linee verticali di separazione tra residui
+    current_res = None
+    for c, s in enumerate(flat_chain):
+        if s["residue"] != current_res:
+            if current_res is not None:
+                ax2.axvline(c - 0.5, color="#888888", lw=0.8, ls="--", zorder=3)
+            current_res = s["residue"]
+
+    # Etichette residui (ogni primo sito del residuo)
+    seen = set()
+    for c, s in enumerate(flat_chain):
+        if s["residue"] not in seen:
+            ax2.text(c, n_types - 0.1, s["residue"].split("_")[0],
+                     ha="left", va="bottom", fontsize=6,
+                     rotation=60, color="#333333")
+            seen.add(s["residue"])
+
+    ax2.set_xlim(-0.5, n_sites - 0.5)
+    ax2.set_ylim(-0.5, n_types + 0.5)
+    ax2.set_yticks(range(n_types))
+    ax2.set_yticklabels(FEAT_TYPES, fontsize=9)
+    ax2.set_xlabel("Indice sito nella sequenza flat", fontsize=10)
+    ax2.set_title(
+        f"Sequenza flat dei siti — {fname}  ({n_sites} siti totali)",
+        fontsize=12, fontweight="bold",
+    )
+    ax2.grid(axis="x", alpha=0.15)
+    fig2.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"  Plot salvato in: {save_path}")
-    else:
+        p = save_path.replace(".png", "_sequence.png")
+        fig2.savefig(p, dpi=150, bbox_inches="tight")
+        print(f"  Plot 2 (sequenza flat) salvato in: {p}")
+
+    # ═════════════════════════════════════════════════════════════════════
+    # FIGURA 3 — Barchart impilato: composizione per residuo
+    # ═════════════════════════════════════════════════════════════════════
+    # Conta tipi per residuo
+    res_order = [e["record"].label for e in per_residue]
+    counts    = {res: Counter() for res in res_order}
+    for s in flat_chain:
+        counts[s["residue"]][s["type"]] += 1
+
+    fig3, ax3 = plt.subplots(figsize=(max(14, n_res * 0.55), 5))
+
+    bottoms = np.zeros(n_res)
+    for ft in FEAT_TYPES:
+        vals = np.array([counts[r][ft] for r in res_order], dtype=float)
+        bars = ax3.bar(range(n_res), vals, bottom=bottoms,
+                       color=COLOR_MAP[ft], label=ft, width=0.75)
+        bottoms += vals
+
+    ax3.set_xticks(range(n_res))
+    ax3.set_xticklabels(
+        [r.split("_")[0] for r in res_order],
+        rotation=60, ha="right", fontsize=8,
+    )
+    ax3.set_ylabel("Numero di siti", fontsize=10)
+    ax3.set_title(
+        f"Composizione farmacofori per residuo — {fname}\n"
+        f"(ordinati per distanza dal centroide della tasca)",
+        fontsize=12, fontweight="bold",
+    )
+    ax3.legend(loc="upper right", fontsize=8, framealpha=0.9)
+    ax3.grid(axis="y", alpha=0.3)
+    fig3.tight_layout()
+
+    if save_path:
+        p = save_path.replace(".png", "_composition.png")
+        fig3.savefig(p, dpi=150, bbox_inches="tight")
+        print(f"  Plot 3 (composizione) salvato in: {p}")
+
+
+    if not save_path:
         plt.show()
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Mappa la tasca di una proteina (PDB) sul reticolo 2D"
+        description="Mappa la tasca PDB in una sequenza flat di siti sul reticolo"
     )
-    parser.add_argument("--pdb", type=str, required=True,
-                        help="Percorso al file PDB della tasca (es. data/raw/1a08_pocket.pdb)")
-    parser.add_argument("--k-strategy", type=str, default="active_features",
+    parser.add_argument("--pdb", required=True,
+                        help="File PDB della tasca (es. data/raw/1a08_pocket.pdb)")
+    parser.add_argument("--k-strategy", default="active_features",
                         choices=["active_features", "heavy_atoms", "fixed", "groups"])
-    parser.add_argument("--projection", type=str, default="pca", choices=["pca", "mds"])
-    parser.add_argument("--label-mode", type=str, default="one_hot",
-                        choices=["one_hot", "index", "embedding"])
     parser.add_argument("--max-k", type=int, default=6,
                         help="Max siti per residuo (default 6)")
-    parser.add_argument("--output", type=str, default=None,
+    parser.add_argument("--output", default=None,
                         help="Directory dove salvare JSON e CSV")
     parser.add_argument("--plot", action="store_true",
-                        help="Mostra la visualizzazione interattiva")
-    parser.add_argument("--save-plot", type=str, default=None,
-                        help="Salva il plot in un file PNG (es. output/pocket.png)")
+                        help="Mostra visualizzazione interattiva")
+    parser.add_argument("--save-plot", default=None,
+                        help="Salva il plot come PNG")
+    parser.add_argument("--segment-size", type=int, default=2,
+                        help="Residui per segmento/qubit (default 2)")
+    parser.add_argument("--threshold", type=int, default=2,
+                        help="HBD+HBA minimi per qubit=|1> (default 2)")
     args = parser.parse_args()
 
     run_pocket(
         pdb_path=args.pdb,
         k_strategy=args.k_strategy,
-        projection=args.projection,
-        label_mode=args.label_mode,
         max_k=args.max_k,
         output_dir=args.output,
         plot=args.plot,
         save_plot=args.save_plot,
+        args_residues_per_segment=args.segment_size,
+        args_threshold=args.threshold,
     )
