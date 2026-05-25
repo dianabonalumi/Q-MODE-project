@@ -9,9 +9,16 @@ Sfide:
   - Il reticolo può essere quadrato o esagonale
 
 Strategie di snapping:
-  1. "round"  — arrotondamento semplice al nodo intero più vicino
+  1. "round"     — arrotondamento semplice al nodo intero più vicino
   2. "hungarian" — assegnazione ottima (minimizza distanza totale) tramite
                    algoritmo ungherese; garantisce nodi distinti
+
+Fix applicati rispetto alla versione precedente:
+  - Il raggio di generazione candidati è adattivo: parte da 2 e viene
+    incrementato automaticamente finché n_cand >= k (evita il bug silenzioso
+    in cui result[r] rimaneva al default (0,0)).
+  - Viene sollevata una ValueError esplicita se anche con raggio_max=10
+    non si riesce a raccogliere abbastanza candidati distinti.
 """
 
 from __future__ import annotations
@@ -69,30 +76,58 @@ def _snap_hungarian(coords_2d: np.ndarray) -> List[Tuple[int, int]]:
 
     Genera un insieme di nodi candidati (griglia intorno ai siti proiettati),
     poi trova l'assegnazione 1-a-1 che minimizza la distanza euclidea totale.
+
+    Il raggio di ricerca parte da 2 e viene espanso automaticamente finché
+    n_cand >= k, garantendo che l'algoritmo ungherese abbia sempre abbastanza
+    nodi distinti da assegnare (fix al bug precedente con (0,0) silenzioso).
     """
     k = len(coords_2d)
+    if k == 0:
+        return []
 
-    # Genera candidati: per ogni sito i nodi interi entro raggio 2
-    candidate_set = set()
-    for x, y in coords_2d:
-        for di in range(-2, 3):
-            for dj in range(-2, 3):
-                candidate_set.add((int(np.round(x)) + di, int(np.round(y)) + dj))
+    # Raggio adattivo: espande finché ci sono abbastanza candidati distinti
+    MAX_RADIUS = 10
+    candidate_set: set = set()
+    for radius in range(2, MAX_RADIUS + 1):
+        candidate_set = set()
+        for x, y in coords_2d:
+            for di in range(-radius, radius + 1):
+                for dj in range(-radius, radius + 1):
+                    candidate_set.add((int(np.round(x)) + di, int(np.round(y)) + dj))
+        if len(candidate_set) >= k:
+            break
+    else:
+        raise ValueError(
+            f"Impossibile trovare {k} nodi distinti entro raggio {MAX_RADIUS}. "
+            f"Candidati disponibili: {len(candidate_set)}. "
+            "Aumenta lattice_spacing o riduci max_k."
+        )
 
     candidates = list(candidate_set)
     n_cand = len(candidates)
 
-    # Matrice dei costi: distanza euclidea sito → candidato
+    # Matrice dei costi: distanza euclidea² sito → candidato
     cost = np.zeros((k, n_cand))
     for i, (x, y) in enumerate(coords_2d):
         for j, (ci, cj) in enumerate(candidates):
             cost[i, j] = (x - ci) ** 2 + (y - cj) ** 2
 
-    # Algoritmo ungherese (scipy) — richiede matrice quadrata o rettangolare
+    # Algoritmo ungherese — matrice rettangolare (k × n_cand, k ≤ n_cand)
     row_ind, col_ind = linear_sum_assignment(cost)
 
-    result = [(0, 0)] * k
+    # Verifica post-assegnazione: tutti i k siti devono essere assegnati
+    assert len(row_ind) == k, (
+        f"linear_sum_assignment ha assegnato solo {len(row_ind)}/{k} siti."
+    )
+
+    result: List[Tuple[int, int]] = [(0, 0)] * k
     for r, c in zip(row_ind, col_ind):
         result[r] = candidates[c]
+
+    # Sanity check: nessuna collisione
+    assigned = [result[r] for r in row_ind]
+    assert len(set(assigned)) == k, (
+        f"Collisione residua dopo algoritmo ungherese: {assigned}"
+    )
 
     return result

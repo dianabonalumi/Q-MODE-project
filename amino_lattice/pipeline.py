@@ -2,13 +2,26 @@
 Pipeline end-to-end: amminoacido → catena di K siti sul reticolo 2D
 ====================================================================
 
-Uso:
+Uso (SMILES singolo):
     from amino_lattice import AminoLatticePipeline
 
     pipeline = AminoLatticePipeline()
     result = pipeline.run(smiles="CC(N)C(=O)O", name="ALA")
     print(result.chain)   # [(i1,j1,'HBondDonor'), ...]
     result.visualize()
+
+Uso (file PDB — intera proteina o tasca):
+    results = pipeline.run_from_pdb(
+        pdb_path="protein.pdb",
+        chains=["A"],          # opzionale, filtra per catena
+        skip_water=True,
+    )
+    for r in results:
+        print(r.name, r.chain)
+
+Uso (batch SMILES):
+    records = [{"smiles": "...", "name": "ALA"}, ...]
+    results = pipeline.run_batch(records)
 """
 
 from __future__ import annotations
@@ -194,8 +207,8 @@ class AminoLatticePipeline:
             fixed_k=self.fixed_k,
         )
 
-        # Selezione K siti rappresentativi
-        sites = select_representative_sites(features, k)
+        # Selezione K siti rappresentativi — passa mol per ordinamento topologico
+        sites = select_representative_sites(features, k, mol=mol)
         k = len(sites)  # può essere < k se feature < k
 
         # Step 4: fitting geometrico
@@ -226,7 +239,113 @@ class AminoLatticePipeline:
             stress=stress,
         )
 
-    def run_batch(self, records: list[dict]) -> list[MappingResult]:
+    def run_from_mol(self, mol, name: str = "UNK") -> "MappingResult":
+        """
+        Esegue la pipeline a partire da un oggetto RDKit Mol già pronto
+        (es. proveniente da pdb_reader.residue_to_mol).
+
+        Utile quando si vuole riutilizzare la mol per l'ordinamento topologico
+        senza ri-parsare lo SMILES.
+
+        Parameters
+        ----------
+        mol : RDKit Mol
+            Molecola con coordinate 3D (conformatore già presente).
+        name : str
+            Nome del residuo per il report.
+
+        Returns
+        -------
+        MappingResult
+        """
+        from rdkit.Chem import MolToSmiles
+        smiles = MolToSmiles(mol)
+
+        features = extract_features(mol, embed_3d=False)   # coordinate già presenti
+        if not features:
+            warnings.warn(f"[{name}] Nessuna feature estratta, uso backbone carbonilico")
+            features = _backbone_fallback(mol)
+
+        k = choose_k(
+            features, mol=mol,
+            strategy=self.k_strategy,
+            max_k=self.max_k, min_k=self.min_k,
+            fixed_k=self.fixed_k,
+        )
+
+        sites = select_representative_sites(features, k, mol=mol)
+        k = len(sites)
+
+        coords_2d = fit_to_lattice_2d(
+            sites,
+            method=self.projection_method,
+            lattice_spacing=self.lattice_spacing,
+        )
+        stress = projection_stress(sites, coords_2d)
+        lattice_nodes = snap_to_lattice(coords_2d, strategy=self.snap_strategy)
+        labeled_sites = label_sites(sites, lattice_nodes, mode=self.label_mode)
+
+        return MappingResult(
+            name=name,
+            smiles=smiles,
+            k=k,
+            features=features,
+            sites=sites,
+            coords_2d=coords_2d,
+            lattice_nodes=lattice_nodes,
+            labeled_sites=labeled_sites,
+            stress=stress,
+        )
+
+    def run_from_pdb(
+        self,
+        pdb_path: str,
+        chains: Optional[List[str]] = None,
+        skip_water: bool = True,
+    ) -> List["MappingResult"]:
+        """
+        Legge un file PDB e processa ogni residuo come un amminoacido separato.
+
+        Usa pdb_reader.load_residues_from_pdb() per estrarre i residui con
+        coordinate 3D reali (cristallografiche), poi chiama run_from_mol()
+        per ciascuno — garantendo che l'ordinamento topologico usi la
+        geometria sperimentale, non una conformazione generata da ETKDG.
+
+        Parameters
+        ----------
+        pdb_path : str
+            Percorso al file .pdb
+        chains : list of str, opzionale
+            Es. ["A", "B"]. Se None, tutte le catene.
+        skip_water : bool
+            Se True (default), salta HOH/WAT.
+
+        Returns
+        -------
+        List[MappingResult]  — uno per residuo nel PDB
+        """
+        from .pdb_reader import load_residues_from_pdb
+
+        records = load_residues_from_pdb(
+            pdb_path,
+            skip_water=skip_water,
+            chains=chains,
+        )
+
+        results = []
+        for rec in records:
+            if rec.mol is None:
+                warnings.warn(f"[{rec.label}] mol non disponibile, salto residuo")
+                continue
+            try:
+                r = self.run_from_mol(rec.mol, name=rec.label)
+                results.append(r)
+            except Exception as e:
+                warnings.warn(f"[{rec.label}] Errore: {e}")
+
+        return results
+
+    def run_batch(self, records: list[dict]) -> list["MappingResult"]:
         """
         Processa un batch di amminoacidi.
 
