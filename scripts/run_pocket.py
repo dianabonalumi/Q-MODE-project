@@ -31,15 +31,23 @@ from amino_lattice.site_selection import choose_k, select_representative_sites
 from amino_lattice.lattice_fitting import fit_to_lattice_2d
 from amino_lattice.snapping import snap_to_lattice
 from amino_lattice.labeling import label_sites, LabeledSite
+from amino_lattice.hbond_geometry import (
+    compute_pocket_hbond_strengths,
+    assign_feature_hbond_intensities,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-def process_residue(rec, k_strategy, max_k):
+def process_residue(rec, k_strategy, max_k, hb_atoms=None):
     """
     Esegue la pipeline locale su un singolo residuo.
     Restituisce la lista di LabeledSite con coordinate (i,j) locali,
     oppure None se il residuo non può essere processato.
+
+    hb_atoms : lista di HBAtom del residuo (con forze geometriche pre-calcolate
+    a livello di tasca). Se fornita, sovrascrive le intensità delle feature HBond
+    con i valori geometrici reali (distanza + angolo D–H···A).
     """
     if rec.mol is None:
         return None
@@ -50,6 +58,10 @@ def process_residue(rec, k_strategy, max_k):
         if not features:
             warnings.warn(f"  {rec.label}: nessuna feature estratta, skip")
             return None
+
+        # Intensità HB geometrica (sostituisce il placeholder)
+        if hb_atoms is not None:
+            assign_feature_hbond_intensities(features, hb_atoms)
 
         # Step 3: scelta K e selezione siti
         k = choose_k(features, mol=rec.mol, strategy=k_strategy,
@@ -99,6 +111,10 @@ def run_pocket(
     print(f"      Centroide tasca: ({centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}) Å")
     print(f"      Ordine: " + " → ".join(r.label for r in residues[:5]) + " → ...")
 
+    # ── Intensità HB geometrica a livello di tasca ────────────────────────
+    # Legami idrogeno reali TRA residui diversi: distanza + angolo D–H···A.
+    hb_strengths = compute_pocket_hbond_strengths(residues)
+
     # ── Step 3: pipeline locale per ogni residuo ──────────────────────────
     print(f"\n[3/4] Pipeline locale per ogni residuo (reticolo indipendente)...")
 
@@ -106,7 +122,8 @@ def run_pocket(
     per_residue = []         # per visualizzazione e debug
 
     for rec in residues:
-        labeled = process_residue(rec, k_strategy, max_k)
+        labeled = process_residue(rec, k_strategy, max_k,
+                                  hb_atoms=hb_strengths.get(rec.label))
         if labeled is None:
             continue
 
@@ -170,25 +187,23 @@ def run_pocket(
     # ── Catena di qubit (Quantum Encoding) ────────────────────────────────
     from amino_lattice.qubit_chain import build_qubit_chain, print_qubit_chain
 
-    # 1. Calcolo globale dei minimi e massimi per idrofobicità e H-Bond
-    h_vals, hb_vals = [], []
+    # 1. Range globale di idrofobicità e H-Bond calcolato SOLO sui valori
+    #    attivi (>0) di ciascun canale. Includere gli zeri strutturali (siti
+    #    dell'altro canale) abbasserebbe il minimo a 0 e spingerebbe la soglia
+    #    a metà del massimo: quasi nessun sito la supererebbe → catena di zeri.
+    from amino_lattice.qubit_chain import get_h_hb_intensities
+    h_pos, hb_pos = [], []
     for s in flat_chain:
-        t = s["type"]
-        intensity = s.get("intensity", 1.0)
-        if t in ["Hydrophobe", "Aromatic"]:
-            h_vals.append(intensity)
-            hb_vals.append(0.0)
-        elif t in ["HBondDonor", "HBondAcceptor"]:
-            h_vals.append(0.0)
-            hb_vals.append(intensity)
-        else:
-            h_vals.append(0.0)
-            hb_vals.append(0.0)
-            
-    h_min = min(h_vals) if h_vals else 0.0
-    h_max = max(h_vals) if h_vals else 1.0
-    hb_min = min(hb_vals) if hb_vals else 0.0
-    hb_max = max(hb_vals) if hb_vals else 1.0
+        h, hb = get_h_hb_intensities(s)
+        if h > 0:
+            h_pos.append(h)
+        if hb > 0:
+            hb_pos.append(hb)
+
+    h_min = min(h_pos) if h_pos else 0.0
+    h_max = max(h_pos) if h_pos else 1.0
+    hb_min = min(hb_pos) if hb_pos else 0.0
+    hb_max = max(hb_pos) if hb_pos else 1.0
 
     print(f"\n{'─'*60}")
     print(f"  Quantum Encoding  (Sliding window ligand size = {args_ligand_size})")

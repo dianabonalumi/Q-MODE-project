@@ -20,10 +20,10 @@ from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit.Chem import rdDepictor
 from rdkit.Chem.rdchem import Mol
 
-# Feature factories built-in di RDKit
+# Feature factory di RDKit (API moderna). La vecchia `MolChemicalFeatures`
+# non esiste più nelle versioni recenti di RDKit: usare `ChemicalFeatures`.
 try:
-    from rdkit.Chem import MolChemicalFeatures
-    from rdkit.Chem.Features.FeatDirUtilsRD import GetIonizable
+    from rdkit.Chem import ChemicalFeatures
     _HAS_FACTORY = True
 except ImportError:
     _HAS_FACTORY = False
@@ -49,6 +49,29 @@ FEATURE_TYPES = [
 # Indice intero per ogni tipo (usato nel labeling one-hot)
 FEATURE_INDEX = {ft: i for i, ft in enumerate(FEATURE_TYPES)}
 
+# Specificità farmacoforica: quanto un tipo è informativo/raro. Quando più tipi
+# coincidono nello stesso cluster, il tipo PIÙ SPECIFICO deve prevalere — un
+# anello aromatico o un gruppo carico non va mascherato dai numerosi atomi
+# idrofobici che lo circondano (che sono generici).
+FEATURE_SPECIFICITY = {
+    "Aromatic": 3, "PosIonizable": 3, "NegIonizable": 3,
+    "HBondDonor": 2, "HBondAcceptor": 2,
+    "Hydrophobe": 1,
+}
+
+# Le famiglie di RDKit (BaseFeatures.fdef) usano nomi diversi dai nostri:
+# "Donor"/"Acceptor" invece di "HBondDonor"/"HBondAcceptor", e una famiglia
+# "LumpedHydrophobe" per gruppi idrofobici aggregati. Mappiamo sui nostri tipi.
+FAMILY_MAP = {
+    "Donor": "HBondDonor",
+    "Acceptor": "HBondAcceptor",
+    "Hydrophobe": "Hydrophobe",
+    "LumpedHydrophobe": "Hydrophobe",
+    "Aromatic": "Aromatic",
+    "PosIonizable": "PosIonizable",
+    "NegIonizable": "NegIonizable",
+}
+
 
 @dataclass
 class AtomFeature:
@@ -66,13 +89,12 @@ class AtomFeature:
 # Funzione principale
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _compute_pseudo_hbond_intensity(coords: np.ndarray) -> float:
-    """
-    Placeholder: calcola un'intensità continua fittizia ma deterministica
-    per un legame a idrogeno basandosi sulle coordinate spaziali.
-    Ritorna un valore tra 1.0 e 5.0.
-    """
-    return 1.0 + float(np.abs(np.sum(coords)) % 4.0)
+# NOTA: l'intensità dei legami idrogeno NON viene più calcolata qui con un
+# placeholder. Le feature HBond escono con intensità neutra 1.0; la forza
+# geometrica reale (distanza + angolo D–H···A, tra residui diversi) viene
+# assegnata a valle da `hbond_geometry.assign_feature_hbond_intensities()`
+# quando è disponibile il contesto della tasca (vedi scripts/run_pocket.py).
+_HB_NEUTRAL_INTENSITY = 1.0
 
 def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
     """
@@ -116,20 +138,41 @@ def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
 
     features: List[AtomFeature] = []
 
+    # Contributi di Crippen al LogP, per atomo pesante (indici allineati a `mol`
+    # perché AddHs aggiunge gli H in coda, preservando gli indici degli atomi
+    # pesanti). Usati per assegnare un'INTENSITÀ idrofobica continua, non per
+    # creare nuove feature (evita di inondare la molecola di siti Hydrophobe).
+    crippen_logp = {}
+    try:
+        mol_no_h = Chem.RemoveHs(mol)
+        for atom_idx, (logp, _mr) in enumerate(rdMolDescriptors._CalcCrippenContribs(mol_no_h)):
+            crippen_logp[atom_idx] = float(logp)
+    except Exception:
+        pass
+
+    def _hydrophobic_intensity(atom_ids):
+        vals = [crippen_logp.get(i, 0.0) for i in atom_ids]
+        s = sum(v for v in vals if v > 0)
+        return s if s > 0 else 1.0
+
     # ── Farmacofori via Feature Factory ───────────────────────────────────
     if _HAS_FACTORY:
-        factory = MolChemicalFeatures.BuildFeatureFactory(FDEF_PATH)
+        factory = ChemicalFeatures.BuildFeatureFactory(FDEF_PATH)
         rdkit_feats = factory.GetFeaturesForMol(mol)
         for f in rdkit_feats:
-            fname = f.GetFamily()
-            if fname not in FEATURE_TYPES:
+            fname = FAMILY_MAP.get(f.GetFamily())
+            if fname is None:
                 continue
             atom_ids = list(f.GetAtomIds())
             centroid = positions[atom_ids].mean(axis=0)
-            intensity = 1.0
+
             if fname in ("HBondDonor", "HBondAcceptor"):
-                intensity = _compute_pseudo_hbond_intensity(centroid)
-            
+                intensity = _HB_NEUTRAL_INTENSITY   # forza geometrica assegnata a valle
+            elif fname == "Hydrophobe":
+                intensity = _hydrophobic_intensity(atom_ids)  # LogP di Crippen
+            else:
+                intensity = 1.0                      # Aromatic / Pos / Neg Ionizable
+
             features.append(AtomFeature(
                 feature_type=fname,
                 coords=centroid,
@@ -137,26 +180,12 @@ def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
                 intensity=intensity,
             ))
     else:
-        # fallback manuale se la factory non è disponibile
+        # ── Fallback senza factory: H-bond manuali + Crippen per atomo ─────
         features.extend(_manual_hbond_features(mol, positions))
-
-    # ── Idrofobicità (Crippen per atomo) ──────────────────────────────────
-    mol_no_h = Chem.RemoveHs(mol)
-    try:
-        contribs = rdMolDescriptors._CalcCrippenContribs(mol_no_h)
-        for atom_idx, (logp, _mr) in enumerate(contribs):
-            if logp > 0.1:  # soglia per considerare l'atomo idrofobico
-                atom = mol_no_h.GetAtomWithIdx(atom_idx)
-                # mappa indice back to mol con H (approssimato: stesso idx se atomo pesante)
+        for atom_idx, logp in crippen_logp.items():
+            if logp > 0.1:
                 coord = positions[atom_idx] if atom_idx < len(positions) else positions[0]
-                features.append(AtomFeature(
-                    feature_type="Hydrophobe",
-                    coords=coord,
-                    atom_indices=[atom_idx],
-                    intensity=float(logp),
-                ))
-    except Exception:
-        pass  # alcuni amminoacidi molto semplici possono non avere contributi
+                features.append(AtomFeature("Hydrophobe", coord, [atom_idx], intensity=logp))
 
     return features
 
@@ -175,13 +204,11 @@ def _manual_hbond_features(mol: Mol, positions: np.ndarray) -> List[AtomFeature]
 
         # Donor: N o O con almeno un H
         if symbol in ("N", "O") and atom.GetTotalNumHs() > 0:
-            intensity = _compute_pseudo_hbond_intensity(coord)
-            features.append(AtomFeature("HBondDonor", coord, [idx], intensity=intensity))
+            features.append(AtomFeature("HBondDonor", coord, [idx], intensity=_HB_NEUTRAL_INTENSITY))
 
         # Acceptor: N o O con lone pair (approssimazione: tutti N e O)
         if symbol in ("N", "O", "F"):
-            intensity = _compute_pseudo_hbond_intensity(coord)
-            features.append(AtomFeature("HBondAcceptor", coord, [idx], intensity=intensity))
+            features.append(AtomFeature("HBondAcceptor", coord, [idx], intensity=_HB_NEUTRAL_INTENSITY))
 
     return features
 

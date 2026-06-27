@@ -22,13 +22,22 @@ class QubitSegment:
 
 
 def get_h_hb_intensities(site: dict) -> tuple[float, float]:
-    """Ritorna (h, hb) per un sito."""
+    """
+    Riduce un sito ai due canali di interazione (h, hb).
+
+      h  (idrofobico/apolare) : Hydrophobe, Aromatic
+      hb (polare/carico)      : HBondDonor, HBondAcceptor, PosIonizable, NegIonizable
+
+    I gruppi ionizzabili NON vengono più scartati a (0,0): sono interazioni
+    polari forti e confluiscono nel canale hb con la loro intensità geometrica.
+    Così ogni sito contribuisce ad almeno un canale (niente bit morti).
+    """
     t = site["type"]
     intensity = site.get("intensity", 1.0)
-    
+
     if t in ["Hydrophobe", "Aromatic"]:
         return intensity, 0.0
-    elif t in ["HBondDonor", "HBondAcceptor"]:
+    elif t in ["HBondDonor", "HBondAcceptor", "PosIonizable", "NegIonizable"]:
         return 0.0, intensity
     else:
         return 0.0, 0.0
@@ -46,23 +55,33 @@ def build_qubit_chain(
     Crea la catena di segmenti e codifica gli stati quantistici.
     Implementa la logica di 'protein shift' (sliding window) del paper.
     """
+    import statistics
+
     segments = []
     n_sites = len(flat_chain)
-    
+
     if n_sites < ligand_size:
         return []
-        
+
+    # Soglie di binarizzazione = mediana dei valori ATTIVI di ciascun canale.
+    # La mediana separa i siti ~50/50 ed evita la catena dominata da zeri che
+    # si avrebbe usando la media del range (vedi quantum_encoding.first_encoding).
+    h_active = [get_h_hb_intensities(s)[0] for s in flat_chain if get_h_hb_intensities(s)[0] > 0]
+    hb_active = [get_h_hb_intensities(s)[1] for s in flat_chain if get_h_hb_intensities(s)[1] > 0]
+    h_thr = statistics.median(h_active) if h_active else (h_min + h_max) / 2.0
+    hb_thr = statistics.median(hb_active) if hb_active else (hb_min + hb_max) / 2.0
+
     for i in range(n_sites - ligand_size + 1):
         segment_sites = flat_chain[i:i+ligand_size]
-        
+
         first_enc_str = ""
         second_enc_amps = []
-        
+
         for site in segment_sites:
             h, hb = get_h_hb_intensities(site)
-            
+
             # First encoding (Grover Search) - 2 qubit per sito
-            q_str = first_encoding(h, hb, h_min, h_max, hb_min, hb_max)
+            q_str = first_encoding(h, hb, h_thr, hb_thr)
             first_enc_str += q_str
             
             # Second encoding (Euclidean distance) - 4 ampiezze per sito

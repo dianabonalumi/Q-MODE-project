@@ -259,24 +259,6 @@ def compute_pocket_centroid(residues: List[ResidueRecord]) -> np.ndarray:
     return np.array(ca_coords).mean(axis=0)
 
 
-def compute_pocket_centroid(residues: List[ResidueRecord]) -> np.ndarray:
-    """
-    Calcola il centroide 3D della tasca come media delle posizioni
-    dei carboni alpha (CA) di tutti i residui.
-    """
-    ca_coords = []
-    for rec in residues:
-        for atom in rec.atoms:
-            if atom["name"] == "CA":
-                ca_coords.append([atom["x"], atom["y"], atom["z"]])
-                break
-    if not ca_coords:
-        # fallback: media di tutti gli atomi
-        all_coords = [[a["x"], a["y"], a["z"]] for r in residues for a in r.atoms]
-        return np.array(all_coords).mean(axis=0)
-    return np.array(ca_coords).mean(axis=0)
-
-
 def sort_residues_by_distance(
     residues: List[ResidueRecord],
     centroid: np.ndarray,

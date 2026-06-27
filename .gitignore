@@ -10,3 +10,10 @@ venv/
 data/processed/
 *.png
 *.svg
+
+# macOS
+.DS_Store
+
+# Strutture PDB intere scaricate da make_pockets.py (rigenerabili).
+# I file *_pocket.pdb (tasche estratte) restano tracciati.
+data/raw/????.pdb
