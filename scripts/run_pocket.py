@@ -1,5 +1,5 @@
 """
-Script principale: PDB tasca → sequenza flat di siti di interazione
+Script principale: PDB tasca -> sequenza flat di siti di interazione
 ====================================================================
 Ogni residuo ha il suo reticolo locale indipendente.
 I residui vengono ordinati per distanza dal centroide della tasca.
@@ -18,8 +18,10 @@ import warnings
 
 import numpy as np
 
+# Assicurati che i moduli custom siano importabili
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from amino_lattice.surface_filter import compute_atom_sasa, filter_surface_features_by_coords
 from amino_lattice.pdb_reader import (
     load_residues_from_pdb,
     compute_pocket_centroid,
@@ -39,15 +41,16 @@ from amino_lattice.hbond_geometry import (
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-def process_residue(rec, k_strategy, max_k, hb_atoms=None):
+def process_residue(rec, k_strategy, max_k, hb_atoms=None, surface_filter=False, sasa_threshold=1.0, sasa_map=None):
     """
     Esegue la pipeline locale su un singolo residuo.
     Restituisce la lista di LabeledSite con coordinate (i,j) locali,
     oppure None se il residuo non può essere processato.
 
-    hb_atoms : lista di HBAtom del residuo (con forze geometriche pre-calcolate
-    a livello di tasca). Se fornita, sovrascrive le intensità delle feature HBond
-    con i valori geometrici reali (distanza + angolo D–H···A).
+    hb_atoms : lista di HBAtom del residuo.
+    surface_filter : booleano per attivare il filtro SASA.
+    sasa_threshold : soglia per il filtro.
+    sasa_map : dizionario pre-calcolato della SASA per gli atomi.
     """
     if rec.mol is None:
         return None
@@ -62,10 +65,22 @@ def process_residue(rec, k_strategy, max_k, hb_atoms=None):
         # Intensità HB geometrica (sostituisce il placeholder)
         if hb_atoms is not None:
             assign_feature_hbond_intensities(features, hb_atoms)
+        
+        # ── Filtro superficie (opzionale) ────────────────────────────────────
+        if surface_filter and sasa_map is not None:
+            features = filter_surface_features_by_coords(
+                features=features,
+                sasa_map=sasa_map,
+                chain_id=rec.chain_id,
+                res_seq=rec.res_seq,
+                all_atom_coords=rec.atoms,
+                sasa_threshold=sasa_threshold,
+            )
+            if not features:
+                return None
 
         # Step 3: scelta K e selezione siti
-        k = choose_k(features, mol=rec.mol, strategy=k_strategy,
-                     max_k=max_k, min_k=1)
+        k = choose_k(features, mol=rec.mol, strategy=k_strategy, max_k=max_k, min_k=1)
         sites = select_representative_sites(features, k)
 
         # Step 4: fitting geometrico LOCALE (PCA sul solo residuo)
@@ -94,6 +109,8 @@ def run_pocket(
     plot=False,
     save_plot=None,
     args_ligand_size=3,
+    surface_filter=False,
+    sasa_threshold=1.0
 ):
     print(f"\n{'='*60}")
     print(f"  Pocket Mapping: {os.path.basename(pdb_path)}")
@@ -109,11 +126,16 @@ def run_pocket(
     centroid = compute_pocket_centroid(residues)
     residues = sort_residues_by_distance(residues, centroid)
     print(f"      Centroide tasca: ({centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}) Å")
-    print(f"      Ordine: " + " → ".join(r.label for r in residues[:5]) + " → ...")
+    print(f"      Ordine: " + " -> ".join(r.label for r in residues[:5]) + " -> ...")
 
     # ── Intensità HB geometrica a livello di tasca ────────────────────────
-    # Legami idrogeno reali TRA residui diversi: distanza + angolo D–H···A.
     hb_strengths = compute_pocket_hbond_strengths(residues)
+
+    # ── Calcolo SASA (se richiesto) ───────────────────────────────────────
+    sasa_map = None
+    if surface_filter:
+        print("\n[!] Calcolo mappa SASA per il filtro di superficie...")
+        sasa_map = compute_atom_sasa(pdb_path)
 
     # ── Step 3: pipeline locale per ogni residuo ──────────────────────────
     print(f"\n[3/4] Pipeline locale per ogni residuo (reticolo indipendente)...")
@@ -122,12 +144,17 @@ def run_pocket(
     per_residue = []         # per visualizzazione e debug
 
     for rec in residues:
-        labeled = process_residue(rec, k_strategy, max_k,
-                                  hb_atoms=hb_strengths.get(rec.label))
+        labeled = process_residue(
+            rec, k_strategy, max_k,
+            hb_atoms=hb_strengths.get(rec.label),
+            surface_filter=surface_filter,
+            sasa_threshold=sasa_threshold,
+            sasa_map=sasa_map
+        )
         if labeled is None:
             continue
 
-        print(f"      {rec.label:20s} → {len(labeled)} siti: "
+        print(f"      {rec.label:20s} -> {len(labeled)} siti: "
               + "  ".join(f"({ls.i:2d},{ls.j:2d}) {ls.feature_type[:3]}"
                           for ls in labeled))
 
@@ -147,11 +174,11 @@ def run_pocket(
 
     # ── Step 4: output ────────────────────────────────────────────────────
     print(f"\n[4/4] Sequenza flat finale")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
     print(f"  Residui processati : {len(per_residue)}")
     print(f"  Siti totali        : {len(flat_chain)}")
     print(f"\n  idx  {'Residuo':20s}  (i, j)     Tipo")
-    print(f"  {'─'*4}  {'─'*20}  {'─'*8}  {'─'*15}")
+    print(f"  {'-'*4}  {'-'*20}  {'-'*8}  {'-'*15}")
     for idx, s in enumerate(flat_chain):
         print(f"  {idx+1:4d}  {s['residue']:20s}  ({s['i']:3d},{s['j']:3d})  {s['type']}")
 
@@ -186,12 +213,8 @@ def run_pocket(
 
     # ── Catena di qubit (Quantum Encoding) ────────────────────────────────
     from amino_lattice.qubit_chain import build_qubit_chain, print_qubit_chain
-
-    # 1. Range globale di idrofobicità e H-Bond calcolato SOLO sui valori
-    #    attivi (>0) di ciascun canale. Includere gli zeri strutturali (siti
-    #    dell'altro canale) abbasserebbe il minimo a 0 e spingerebbe la soglia
-    #    a metà del massimo: quasi nessun sito la supererebbe → catena di zeri.
     from amino_lattice.qubit_chain import get_h_hb_intensities
+    
     h_pos, hb_pos = [], []
     for s in flat_chain:
         h, hb = get_h_hb_intensities(s)
@@ -205,10 +228,10 @@ def run_pocket(
     hb_min = min(hb_pos) if hb_pos else 0.0
     hb_max = max(hb_pos) if hb_pos else 1.0
 
-    print(f"\n{'─'*60}")
+    print(f"\n{'-'*60}")
     print(f"  Quantum Encoding  (Sliding window ligand size = {args_ligand_size})")
     print(f"  h_range: [{h_min:.2f}, {h_max:.2f}], hb_range: [{hb_min:.2f}, {hb_max:.2f}]")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
 
     segments = build_qubit_chain(
         flat_chain,
@@ -256,8 +279,6 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
-    import matplotlib.gridspec as gridspec
-    from collections import Counter
 
     COLOR_MAP = {
         "HBondDonor":    "#2196F3",
@@ -276,7 +297,7 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     fname = os.path.splitext(os.path.basename(pdb_path))[0]
 
     # ═════════════════════════════════════════════════════════════════════
-    # FIGURA 1 — Griglia di reticoli locali (N_COLS per riga)
+    # FIGURA 1 — Griglia di reticoli locali
     # ═════════════════════════════════════════════════════════════════════
     N_COLS = 6
     n_res  = len(per_residue)
@@ -353,7 +374,7 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
         print(f"  Plot 1 (reticoli) salvato in: {p}")
 
     # ═════════════════════════════════════════════════════════════════════
-    # FIGURA 2 — Heatmap sequenza flat: righe=tipi, colonne=indice sito
+    # FIGURA 2 — Heatmap sequenza flat
     # ═════════════════════════════════════════════════════════════════════
     n_sites = len(flat_chain)
     n_types = len(FEAT_TYPES)
@@ -365,7 +386,6 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
 
     fig2, ax2 = plt.subplots(figsize=(max(14, n_sites * 0.22), 4))
 
-    # Disegna ogni cella colorata manualmente per usare i colori farmacofori
     for r, ft in enumerate(FEAT_TYPES):
         for c in range(n_sites):
             if matrix[r, c] > 0:
@@ -374,7 +394,6 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
                     color=COLOR_MAP[ft], alpha=0.85, zorder=2,
                 ))
 
-    # Linee verticali di separazione tra residui
     current_res = None
     for c, s in enumerate(flat_chain):
         if s["residue"] != current_res:
@@ -382,7 +401,6 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
                 ax2.axvline(c - 0.5, color="#888888", lw=0.8, ls="--", zorder=3)
             current_res = s["residue"]
 
-    # Etichette residui (ogni primo sito del residuo)
     seen = set()
     for c, s in enumerate(flat_chain):
         if s["residue"] not in seen:
@@ -409,9 +427,9 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
         print(f"  Plot 2 (sequenza flat) salvato in: {p}")
 
     # ═════════════════════════════════════════════════════════════════════
-    # FIGURA 3 — Barchart impilato: composizione per residuo
+    # FIGURA 3 — Barchart impilato
     # ═════════════════════════════════════════════════════════════════════
-    # Conta tipi per residuo
+    from collections import Counter
     res_order = [e["record"].label for e in per_residue]
     counts    = {res: Counter() for res in res_order}
     for s in flat_chain:
@@ -422,8 +440,8 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     bottoms = np.zeros(n_res)
     for ft in FEAT_TYPES:
         vals = np.array([counts[r][ft] for r in res_order], dtype=float)
-        bars = ax3.bar(range(n_res), vals, bottom=bottoms,
-                       color=COLOR_MAP[ft], label=ft, width=0.75)
+        ax3.bar(range(n_res), vals, bottom=bottoms,
+                color=COLOR_MAP[ft], label=ft, width=0.75)
         bottoms += vals
 
     ax3.set_xticks(range(n_res))
@@ -451,13 +469,25 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
         plt.show()
 
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Mappa la tasca PDB in una sequenza flat di siti sul reticolo"
     )
+    parser.add_argument(
+        "--surface-filter",
+        action="store_true",
+        default=False,
+        help="Filtra le feature farmacofore per accessibilità al solvente (SASA). "
+             "Mantiene solo le feature esposte verso la tasca.")
+    
+    parser.add_argument(
+        "--sasa-threshold",
+        type=float,
+        default=1.0,
+        help="Soglia SASA in Å² per considerare un atomo esposto (default: 1.0).")
+
     parser.add_argument("--pdb", required=True,
                         help="File PDB della tasca (es. data/raw/1a08_pocket.pdb)")
     parser.add_argument("--k-strategy", default="active_features",
@@ -472,8 +502,10 @@ if __name__ == "__main__":
                         help="Salva il plot come PNG")
     parser.add_argument("--ligand-size", type=int, default=3,
                         help="Dimensione del ligando in siti (default 3)")
+    
     args = parser.parse_args()
 
+    # Chiamata pulita alla funzione principale, passando gli argomenti esplicitamente
     run_pocket(
         pdb_path=args.pdb,
         k_strategy=args.k_strategy,
@@ -482,4 +514,6 @@ if __name__ == "__main__":
         plot=args.plot,
         save_plot=args.save_plot,
         args_ligand_size=args.ligand_size,
+        surface_filter=args.surface_filter,
+        sasa_threshold=args.sasa_threshold
     )

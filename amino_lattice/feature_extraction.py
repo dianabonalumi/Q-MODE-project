@@ -54,9 +54,12 @@ FEATURE_INDEX = {ft: i for i, ft in enumerate(FEATURE_TYPES)}
 # anello aromatico o un gruppo carico non va mascherato dai numerosi atomi
 # idrofobici che lo circondano (che sono generici).
 FEATURE_SPECIFICITY = {
-    "Aromatic": 4, "PosIonizable": 3, "NegIonizable": 3,
-    "HBondDonor": 2, "HBondAcceptor": 2,
-    "Hydrophobe": 1,
+    "Aromatic":      5,
+    "HBondDonor":    4,
+    "HBondAcceptor": 4,
+    "NegIonizable":  3,
+    "PosIonizable":  3,
+    "Hydrophobe":    1,
 }
 
 # Le famiglie di RDKit (BaseFeatures.fdef) usano nomi diversi dai nostri:

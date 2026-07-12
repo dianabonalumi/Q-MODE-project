@@ -19,8 +19,6 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 
-# SMILES canonici dei 20 amminoacidi standard (catena laterale + backbone)
-# Usati come fallback se RDKit non riesce a costruire la mol dal PDB direttamente
 AMINO_SMILES = {
     "ALA": "CC(N)C(=O)O",
     "ARG": "N=C(N)NCCCC(N)C(=O)O",
@@ -42,60 +40,37 @@ AMINO_SMILES = {
     "TRP": "OC(=O)C(N)Cc1c[nH]c2ccccc12",
     "TYR": "OC(=O)C(N)Cc1ccc(O)cc1",
     "VAL": "CC(C)C(N)C(=O)O",
-    # Varianti protonazione
     "HSD": "OC(=O)C(N)Cc1c[nH]cn1",
     "HSE": "OC(=O)C(N)Cc1cnc[nH]1",
     "HSP": "OC(=O)C(N)Cc1c[nH+]cn1",
     "HIE": "OC(=O)C(N)Cc1cnc[nH]1",
     "HID": "OC(=O)C(N)Cc1c[nH]cn1",
     "HIP": "OC(=O)C(N)Cc1c[nH+]cn1",
-    "CYX": "SCC(N)C(=O)O",   # CYS con ponte S-S
+    "CYX": "SCC(N)C(=O)O",
 }
 
-# Atomi del backbone da escludere se si vuole solo la catena laterale
 BACKBONE_ATOMS = {"N", "CA", "C", "O", "OXT", "H", "HA", "HN1", "HN2", "HN3"}
 
 
 @dataclass
 class ResidueRecord:
-    """Un residuo estratto dal PDB con le coordinate atomiche 3D."""
-    res_name: str           # es. "ILE"
-    res_seq: int            # numero residuo
-    chain_id: str           # es. "A"
-    atoms: List[dict]       # lista di {"name": str, "x": float, "y": float, "z": float, "element": str}
-    mol: Optional[object] = field(default=None, repr=False)   # RDKit Mol
+    res_name: str
+    res_seq: int
+    chain_id: str
+    atoms: List[dict]
+    mol: Optional[object] = field(default=None, repr=False)
 
     @property
     def label(self) -> str:
         return f"{self.chain_id}{self.res_seq}_{self.res_name}"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Lettura PDB
-# ─────────────────────────────────────────────────────────────────────────────
-
 def load_residues_from_pdb(
     pdb_path: str,
     skip_water: bool = True,
     chains: Optional[List[str]] = None,
 ) -> List[ResidueRecord]:
-    """
-    Legge un file PDB e raggruppa gli atomi per residuo.
-
-    Parameters
-    ----------
-    pdb_path : str
-        Percorso al file .pdb
-    skip_water : bool
-        Se True, salta HOH (molecole d'acqua).
-    chains : list of str, opzionale
-        Filtra per catena (es. ["A"]). Se None, legge tutte.
-
-    Returns
-    -------
-    List[ResidueRecord]  — un elemento per residuo, ordinati per catena+seq
-    """
-    residues: dict = {}   # chiave: (chain_id, res_seq, res_name)
+    residues: dict = {}
 
     with open(pdb_path) as f:
         for line in f:
@@ -103,11 +78,11 @@ def load_residues_from_pdb(
             if record not in ("ATOM", "HETATM"):
                 continue
 
-            res_name = line[17:20].strip()
-            chain_id = line[21].strip()
-            res_seq  = int(line[22:26].strip())
+            res_name  = line[17:20].strip()
+            chain_id  = line[21].strip()
+            res_seq   = int(line[22:26].strip())
             atom_name = line[12:16].strip()
-            element  = line[76:78].strip() if len(line) > 76 else atom_name[0]
+            element   = line[76:78].strip() if len(line) > 76 else atom_name[0]
 
             try:
                 x = float(line[30:38])
@@ -121,7 +96,7 @@ def load_residues_from_pdb(
             if chains and chain_id not in chains:
                 continue
             if res_name not in AMINO_SMILES:
-                continue   # salta HETATM non standard
+                continue
 
             key = (chain_id, res_seq, res_name)
             if key not in residues:
@@ -135,34 +110,16 @@ def load_residues_from_pdb(
                 "name": atom_name, "x": x, "y": y, "z": z, "element": element
             })
 
-    # Ordina per catena e numero residuo
     sorted_keys = sorted(residues.keys(), key=lambda k: (k[0], k[1]))
     records = [residues[k] for k in sorted_keys]
 
-    # Converti in mol RDKit
     for rec in records:
         rec.mol = residue_to_mol(rec)
 
     return records
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Conversione residuo → RDKit Mol con coordinate 3D
-# ─────────────────────────────────────────────────────────────────────────────
-
 def residue_to_mol(rec: ResidueRecord) -> Optional[object]:
-    """
-    Costruisce un RDKit Mol per il residuo con le coordinate 3D dal PDB.
-
-    Strategia:
-      1. Prova a costruire la mol dall'SMILES canonico del residuo
-      2. Genera un conformero con ETKDG
-      3. Sovrascrive le coordinate del conformero con quelle reali del PDB
-         (mappando atomi pesanti per nome)
-
-    In questo modo RDKit ha la topologia corretta (legami, cariche, aromaticità)
-    e le coordinate sono quelle sperimentali cristallografiche.
-    """
     if rec.res_name not in AMINO_SMILES:
         warnings.warn(f"Residuo sconosciuto: {rec.res_name}")
         return None
@@ -174,30 +131,26 @@ def residue_to_mol(rec: ResidueRecord) -> Optional[object]:
 
     mol = Chem.AddHs(mol)
 
-    # Genera conformero iniziale
     params = AllChem.ETKDGv3()
     params.randomSeed = 42
     result = AllChem.EmbedMolecule(mol, params)
     if result == -1:
         AllChem.EmbedMolecule(mol, AllChem.ETKDG())
 
-    # Mappa nome atomo PDB → coordinate reali
     pdb_coords = {a["name"]: np.array([a["x"], a["y"], a["z"]]) for a in rec.atoms}
 
-    # Sovrascrive le coordinate degli atomi pesanti del conformero
-    # usando un mapping euristico per nome elemento
     conf = mol.GetConformer()
-    _overlay_coords_by_element(mol, conf, pdb_coords, rec.res_name)
+    _overlay_coords_by_element(mol, conf, pdb_coords, rec.res_name, rec.atoms)
 
     return mol
 
 
-def _overlay_coords_by_element(mol, conf, pdb_coords: dict, res_name: str):
+def _overlay_coords_by_element(mol, conf, pdb_coords: dict, res_name: str, atoms_pdb: list):
     """
     Mappa le coordinate PDB sugli atomi RDKit.
-    Usa prima il nome canonico (CA, CB, N, O...), poi fallback per elemento.
+    Usa prima il nome canonico (CA, CB, N, O...), poi fallback per elemento
+    nel caso in cui un atomo non venga mappato correttamente.
     """
-    # Nomi standard backbone → simbolo RDKit
     NAME_TO_ELEMENT = {
         "N": "N", "CA": "C", "C": "C", "O": "O",
         "CB": "C", "CG": "C", "CG1": "C", "CG2": "C",
@@ -214,38 +167,62 @@ def _overlay_coords_by_element(mol, conf, pdb_coords: dict, res_name: str):
     used = set()
     heavy_atoms = [a for a in mol.GetAtoms() if a.GetAtomicNum() != 1]
 
-    # Prima passata: assegna per nome canonico nell'ordine degli atomi pesanti
-    pdb_heavy = {k: v for k, v in pdb_coords.items() if k not in BACKBONE_ATOMS or True}
+    pdb_heavy = {k: v for k, v in pdb_coords.items()}
 
-    # Costruisci lista ordinata dei nomi PDB (backbone prima, poi side chain)
-    pdb_order = [name for name in ["N", "CA", "C", "O", "CB", "CG", "CG1", "CG2",
-                                    "CD", "CD1", "CD2", "CE", "CE1", "CE2",
-                                    "CZ", "NZ", "OG", "OG1", "OD1", "OD2",
-                                    "OE1", "OE2", "OH", "ND1", "ND2",
-                                    "NE", "NE1", "NE2", "NH1", "NH2",
-                                    "SD", "SG", "CH2", "CZ2", "CZ3", "CE3",
-                                    "NE1"] if name in pdb_heavy]
+    pdb_order = [name for name in [
+        "N", "CA", "C", "O", "CB", "CG", "CG1", "CG2",
+        "CD", "CD1", "CD2", "CE", "CE1", "CE2",
+        "CZ", "NZ", "OG", "OG1", "OD1", "OD2",
+        "OE1", "OE2", "OH", "ND1", "ND2",
+        "NE", "NE1", "NE2", "NH1", "NH2",
+        "SD", "SG", "CH2", "CZ2", "CZ3", "CE3", "NE1"
+    ] if name in pdb_heavy]
 
-    # Aggiungi nomi non coperti
     for name in pdb_heavy:
         if name not in pdb_order:
             pdb_order.append(name)
 
-    # Assegna in ordine
+    # Prima passata: assegna per nome canonico
     for i, atom in enumerate(heavy_atoms):
         if i < len(pdb_order):
             name = pdb_order[i]
             if name in pdb_coords:
                 coord = pdb_coords[name]
-                conf.SetAtomPosition(atom.GetIdx(), (float(coord[0]), float(coord[1]), float(coord[2])))
+                conf.SetAtomPosition(
+                    atom.GetIdx(),
+                    (float(coord[0]), float(coord[1]), float(coord[2]))
+                )
                 used.add(name)
+
+    # Seconda passata: fallback per atomi non mappati
+    # Se la coordinata risultante è troppo lontana dal centroide del residuo
+    # (indica che è rimasta quella di ETKDGv3), usa l'atomo PDB più vicino
+    # per simbolo chimico.
+    if atoms_pdb:
+        pdb_positions = np.array([[a["x"], a["y"], a["z"]] for a in atoms_pdb])
+        centroid = pdb_positions.mean(axis=0)
+
+        for atom in heavy_atoms:
+            pos = np.array(conf.GetAtomPosition(atom.GetIdx()))
+            if np.linalg.norm(pos - centroid) > 15.0:
+                symbol = atom.GetSymbol()
+                candidates = [a for a in atoms_pdb if a.get("element", "")== symbol]
+                if not candidates:
+                    # fallback sul primo carattere del nome atomo
+                    candidates = [a for a in atoms_pdb if a["name"].strip()[0] == symbol]
+                if candidates:
+                    dists = [
+                        np.linalg.norm(np.array([a["x"], a["y"], a["z"]]) - centroid)
+                        for a in candidates
+                    ]
+                    best = candidates[int(np.argmin(dists))]
+                    conf.SetAtomPosition(
+                        atom.GetIdx(),
+                        (best["x"], best["y"], best["z"])
+                    )
 
 
 def compute_pocket_centroid(residues: List[ResidueRecord]) -> np.ndarray:
-    """
-    Calcola il centroide 3D della tasca come media delle posizioni
-    dei carboni alpha (CA) di tutti i residui.
-    """
     ca_coords = []
     for rec in residues:
         for atom in rec.atoms:
@@ -253,7 +230,6 @@ def compute_pocket_centroid(residues: List[ResidueRecord]) -> np.ndarray:
                 ca_coords.append([atom["x"], atom["y"], atom["z"]])
                 break
     if not ca_coords:
-        # fallback: media di tutti gli atomi
         all_coords = [[a["x"], a["y"], a["z"]] for r in residues for a in r.atoms]
         return np.array(all_coords).mean(axis=0)
     return np.array(ca_coords).mean(axis=0)
@@ -263,10 +239,6 @@ def sort_residues_by_distance(
     residues: List[ResidueRecord],
     centroid: np.ndarray,
 ) -> List[ResidueRecord]:
-    """
-    Ordina i residui per distanza crescente del loro CA dal centroide della tasca.
-    Il residuo più vicino al centro della tasca viene per primo.
-    """
     def ca_distance(rec: ResidueRecord) -> float:
         for atom in rec.atoms:
             if atom["name"] == "CA":
@@ -275,4 +247,3 @@ def sort_residues_by_distance(
         return float("inf")
 
     return sorted(residues, key=ca_distance)
-
