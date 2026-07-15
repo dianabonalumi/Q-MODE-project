@@ -78,11 +78,16 @@ def load_residues_from_pdb(
             if record not in ("ATOM", "HETATM"):
                 continue
 
+            alt_loc   = line[16].strip()
             res_name  = line[17:20].strip()
             chain_id  = line[21].strip()
             res_seq   = int(line[22:26].strip())
             atom_name = line[12:16].strip()
             element   = line[76:78].strip() if len(line) > 76 else atom_name[0]
+
+            # altLoc: tieni solo la conformazione primaria (vuota o "A")
+            if alt_loc and alt_loc != "A":
+                continue
 
             try:
                 x = float(line[30:38])
@@ -119,107 +124,96 @@ def load_residues_from_pdb(
     return records
 
 
+# Backbone dell'amminoacido libero H2N-CHR-C(=O)OH. NX3 (non NX3;H2) per
+# includere anche la Prolina (azoto secondario nell'anello).
+_BACKBONE_FREE_ACID_SMARTS = Chem.MolFromSmarts("[NX3][CX4][CX3](=O)[OX2H1]")
+
+_FREE_TEMPLATE_CACHE: dict = {}
+_INTERNAL_TEMPLATE_CACHE: dict = {}
+
+
+def _get_free_template(res_name: str):
+    """Mol dallo SMILES dell'amminoacido libero (con carbossile -COOH intero)."""
+    if res_name not in _FREE_TEMPLATE_CACHE:
+        _FREE_TEMPLATE_CACHE[res_name] = Chem.MolFromSmiles(AMINO_SMILES[res_name])
+    return _FREE_TEMPLATE_CACHE[res_name]
+
+
+def _get_internal_template(res_name: str):
+    """Template per un residuo interno alla catena: SMILES libero meno
+    l'ossidrile terminale del carbossile di backbone."""
+    if res_name not in _INTERNAL_TEMPLATE_CACHE:
+        free = _get_free_template(res_name)
+        match = free.GetSubstructMatch(_BACKBONE_FREE_ACID_SMARTS)
+        if not match:
+            _INTERNAL_TEMPLATE_CACHE[res_name] = free
+        else:
+            oh_idx = match[-1]  # ultimo atomo del pattern = -OH terminale
+            rw = Chem.RWMol(free)
+            rw.RemoveAtom(oh_idx)
+            m = rw.GetMol()
+            Chem.SanitizeMol(m)
+            _INTERNAL_TEMPLATE_CACHE[res_name] = m
+    return _INTERNAL_TEMPLATE_CACHE[res_name]
+
+
+def _is_hydrogen(atom_dict: dict) -> bool:
+    elem = atom_dict.get("element", "").strip().upper()
+    if elem:
+        return elem == "H"
+    return atom_dict["name"].strip().upper().startswith("H")
+
+
+def _atoms_to_pdb_block(rec: "ResidueRecord") -> str:
+    """Righe ATOM con gli atomi pesanti reali del residuo (nomi/coordinate
+    originali). Gli idrogeni, se presenti, vengono esclusi qui e rigenerati
+    dopo con AddHs(addCoords=True)."""
+    lines = []
+    i = 0
+    for a in rec.atoms:
+        if _is_hydrogen(a):
+            continue
+        i += 1
+        name = a["name"].strip()
+        elem = a.get("element", "").strip() or (name[0] if not name[0].isdigit() else name[1])
+        lines.append(
+            f"ATOM  {i:5d} {name:<4s} {rec.res_name:<3s} {rec.chain_id:1s}{rec.res_seq:4d}    "
+            f"{a['x']:8.3f}{a['y']:8.3f}{a['z']:8.3f}  1.00  0.00          {elem:>2s}"
+        )
+    return "\n".join(lines) + "\nEND\n"
+
+
 def residue_to_mol(rec: ResidueRecord) -> Optional[object]:
+    """Costruisce la molecola RDKit direttamente dagli atomi reali del PDB
+    (coordinate/nomi corretti per costruzione); ordine dei legami e
+    aromaticità assegnati per confronto con un template noto."""
     if rec.res_name not in AMINO_SMILES:
         warnings.warn(f"Residuo sconosciuto: {rec.res_name}")
         return None
 
-    smiles = AMINO_SMILES[rec.res_name]
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
+    has_oxt = any(a["name"].strip() == "OXT" for a in rec.atoms)
+    template = _get_free_template(rec.res_name) if has_oxt else _get_internal_template(rec.res_name)
+
+    pdb_block = _atoms_to_pdb_block(rec)
+    mol_from_pdb = Chem.MolFromPDBBlock(pdb_block, sanitize=False, removeHs=False)
+    if mol_from_pdb is None:
+        warnings.warn(f"{rec.label}: impossibile costruire la molecola dagli atomi PDB")
         return None
 
-    mol = Chem.AddHs(mol)
+    try:
+        mol = AllChem.AssignBondOrdersFromTemplate(template, mol_from_pdb)
+        Chem.SanitizeMol(mol)
+    except Exception as e:
+        warnings.warn(
+            f"{rec.label}: assegnazione ordini di legame fallita ({e}) — "
+            f"probabile residuo con atomi mancanti o non standard, saltato"
+        )
+        return None
 
-    params = AllChem.ETKDGv3()
-    params.randomSeed = 42
-    result = AllChem.EmbedMolecule(mol, params)
-    if result == -1:
-        AllChem.EmbedMolecule(mol, AllChem.ETKDG())
-
-    pdb_coords = {a["name"]: np.array([a["x"], a["y"], a["z"]]) for a in rec.atoms}
-
-    conf = mol.GetConformer()
-    _overlay_coords_by_element(mol, conf, pdb_coords, rec.res_name, rec.atoms)
+    # idrogeni assenti nel PDB a raggi X, stimati dalla geometria reale
+    mol = Chem.AddHs(mol, addCoords=True)
 
     return mol
-
-
-def _overlay_coords_by_element(mol, conf, pdb_coords: dict, res_name: str, atoms_pdb: list):
-    """
-    Mappa le coordinate PDB sugli atomi RDKit.
-    Usa prima il nome canonico (CA, CB, N, O...), poi fallback per elemento
-    nel caso in cui un atomo non venga mappato correttamente.
-    """
-    NAME_TO_ELEMENT = {
-        "N": "N", "CA": "C", "C": "C", "O": "O",
-        "CB": "C", "CG": "C", "CG1": "C", "CG2": "C",
-        "CD": "C", "CD1": "C", "CD2": "C", "CE": "C",
-        "CE1": "C", "CE2": "C", "CE3": "C", "CZ": "C",
-        "CZ2": "C", "CZ3": "C", "CH2": "C",
-        "OG": "O", "OG1": "O", "OD1": "O", "OD2": "O",
-        "OE1": "O", "OE2": "O", "OH": "O", "OXT": "O",
-        "ND1": "N", "ND2": "N", "NE": "N", "NE1": "N",
-        "NE2": "N", "NH1": "N", "NH2": "N", "NZ": "N",
-        "SD": "S", "SG": "S",
-    }
-
-    used = set()
-    heavy_atoms = [a for a in mol.GetAtoms() if a.GetAtomicNum() != 1]
-
-    pdb_heavy = {k: v for k, v in pdb_coords.items()}
-
-    pdb_order = [name for name in [
-        "N", "CA", "C", "O", "CB", "CG", "CG1", "CG2",
-        "CD", "CD1", "CD2", "CE", "CE1", "CE2",
-        "CZ", "NZ", "OG", "OG1", "OD1", "OD2",
-        "OE1", "OE2", "OH", "ND1", "ND2",
-        "NE", "NE1", "NE2", "NH1", "NH2",
-        "SD", "SG", "CH2", "CZ2", "CZ3", "CE3", "NE1"
-    ] if name in pdb_heavy]
-
-    for name in pdb_heavy:
-        if name not in pdb_order:
-            pdb_order.append(name)
-
-    # Prima passata: assegna per nome canonico
-    for i, atom in enumerate(heavy_atoms):
-        if i < len(pdb_order):
-            name = pdb_order[i]
-            if name in pdb_coords:
-                coord = pdb_coords[name]
-                conf.SetAtomPosition(
-                    atom.GetIdx(),
-                    (float(coord[0]), float(coord[1]), float(coord[2]))
-                )
-                used.add(name)
-
-    # Seconda passata: fallback per atomi non mappati
-    # Se la coordinata risultante è troppo lontana dal centroide del residuo
-    # (indica che è rimasta quella di ETKDGv3), usa l'atomo PDB più vicino
-    # per simbolo chimico.
-    if atoms_pdb:
-        pdb_positions = np.array([[a["x"], a["y"], a["z"]] for a in atoms_pdb])
-        centroid = pdb_positions.mean(axis=0)
-
-        for atom in heavy_atoms:
-            pos = np.array(conf.GetAtomPosition(atom.GetIdx()))
-            if np.linalg.norm(pos - centroid) > 15.0:
-                symbol = atom.GetSymbol()
-                candidates = [a for a in atoms_pdb if a.get("element", "")== symbol]
-                if not candidates:
-                    # fallback sul primo carattere del nome atomo
-                    candidates = [a for a in atoms_pdb if a["name"].strip()[0] == symbol]
-                if candidates:
-                    dists = [
-                        np.linalg.norm(np.array([a["x"], a["y"], a["z"]]) - centroid)
-                        for a in candidates
-                    ]
-                    best = candidates[int(np.argmin(dists))]
-                    conf.SetAtomPosition(
-                        atom.GetIdx(),
-                        (best["x"], best["y"], best["z"])
-                    )
 
 
 def compute_pocket_centroid(residues: List[ResidueRecord]) -> np.ndarray:

@@ -92,11 +92,8 @@ class AtomFeature:
 # Funzione principale
 # ─────────────────────────────────────────────────────────────────────────────
 
-# NOTA: l'intensità dei legami idrogeno NON viene più calcolata qui con un
-# placeholder. Le feature HBond escono con intensità neutra 1.0; la forza
-# geometrica reale (distanza + angolo D–H···A, tra residui diversi) viene
-# assegnata a valle da `hbond_geometry.assign_feature_hbond_intensities()`
-# quando è disponibile il contesto della tasca (vedi scripts/run_pocket.py).
+# Le feature HBond escono con intensità neutra 1.0; il valore reale (scale
+# di Abraham) viene assegnato a valle da abraham_hbond.assign_abraham_hb_intensities().
 _HB_NEUTRAL_INTENSITY = 1.0
 
 def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
@@ -134,8 +131,9 @@ def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
         conf = mol.GetConformer()
         positions = conf.GetPositions()  # shape (N_atoms, 3)
     else:
-        # coordinate 2D come surrogate
-        rdDepictor.Compute2DCoords(mol)
+        # riusa il conformero esistente; 2D solo se manca del tutto
+        if mol.GetNumConformers() == 0:
+            rdDepictor.Compute2DCoords(mol)
         conf = mol.GetConformer()
         positions = conf.GetPositions()
 

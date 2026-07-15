@@ -217,11 +217,11 @@ def select_representative_sites(
         ))
 
     # ── Ordinamento topologico ────────────────────────────────────────────
-    ordered = _topological_order(sites, mol)
+    ordered = topological_order(sites, mol)
     return ordered
 
 
-def _topological_order(
+def topological_order(
     sites: List[AtomFeature],
     mol=None,
 ) -> List[AtomFeature]:

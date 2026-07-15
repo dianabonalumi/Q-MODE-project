@@ -2,7 +2,7 @@
 Script principale: PDB tasca -> sequenza flat di siti di interazione
 ====================================================================
 Ogni residuo ha il suo reticolo locale indipendente.
-I residui vengono ordinati per distanza dal centroide della tasca.
+I residui vengono ordinati seguendo la sequenza di catena (chain_id, res_seq).
 L'output è una sequenza flat: [(i,j,tipo), ...] per tutti i siti.
 
 Uso:
@@ -25,29 +25,24 @@ from amino_lattice.surface_filter import compute_atom_sasa, filter_surface_featu
 from amino_lattice.pdb_reader import (
     load_residues_from_pdb,
     compute_pocket_centroid,
-    sort_residues_by_distance,
     AMINO_SMILES,
 )
 from amino_lattice.feature_extraction import extract_features
-from amino_lattice.site_selection import choose_k, select_representative_sites
+from amino_lattice.site_selection import topological_order
 from amino_lattice.lattice_fitting import fit_to_lattice_2d
 from amino_lattice.snapping import snap_to_lattice
 from amino_lattice.labeling import label_sites, LabeledSite
-from amino_lattice.hbond_geometry import (
-    compute_pocket_hbond_strengths,
-    assign_feature_hbond_intensities,
-)
+from amino_lattice.abraham_hbond import assign_abraham_hb_intensities
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-def process_residue(rec, k_strategy, max_k, hb_atoms=None, surface_filter=False, sasa_threshold=1.0, sasa_map=None):
+def process_residue(rec, surface_filter=False, sasa_threshold=1.0, sasa_map=None):
     """
     Esegue la pipeline locale su un singolo residuo.
     Restituisce la lista di LabeledSite con coordinate (i,j) locali,
     oppure None se il residuo non può essere processato.
 
-    hb_atoms : lista di HBAtom del residuo.
     surface_filter : booleano per attivare il filtro SASA.
     sasa_threshold : soglia per il filtro.
     sasa_map : dizionario pre-calcolato della SASA per gli atomi.
@@ -57,15 +52,14 @@ def process_residue(rec, k_strategy, max_k, hb_atoms=None, surface_filter=False,
 
     try:
         # Step 2: feature extraction (usa coord 3D reali dal PDB)
-        features = extract_features(rec.mol, embed_3d=False)
+        features = extract_features(rec.mol, embed_3d=True)
         if not features:
             warnings.warn(f"  {rec.label}: nessuna feature estratta, skip")
             return None
 
-        # Intensità HB geometrica (sostituisce il placeholder)
-        if hb_atoms is not None:
-            assign_feature_hbond_intensities(features, hb_atoms)
-        
+        # Intensità HB intrinseca (scale di Abraham)
+        assign_abraham_hb_intensities(features, res_name=rec.res_name, mol=rec.mol, atom_records=rec.atoms)
+
         # ── Filtro superficie (opzionale) ────────────────────────────────────
         if surface_filter and sasa_map is not None:
             features = filter_surface_features_by_coords(
@@ -79,9 +73,8 @@ def process_residue(rec, k_strategy, max_k, hb_atoms=None, surface_filter=False,
             if not features:
                 return None
 
-        # Step 3: scelta K e selezione siti
-        k = choose_k(features, mol=rec.mol, strategy=k_strategy, max_k=max_k, min_k=1)
-        sites = select_representative_sites(features, k)
+        # Step 3: tutti i siti, ordinati per topologia covalente (no K-Means)
+        sites = topological_order(features, mol=rec.mol)
 
         # Step 4: fitting geometrico LOCALE (PCA sul solo residuo)
         coords_2d = fit_to_lattice_2d(sites, method="pca", lattice_spacing=1.5)
@@ -103,8 +96,6 @@ def process_residue(rec, k_strategy, max_k, hb_atoms=None, surface_filter=False,
 
 def run_pocket(
     pdb_path,
-    k_strategy="active_features",
-    max_k=6,
     output_dir=None,
     plot=False,
     save_plot=None,
@@ -121,15 +112,11 @@ def run_pocket(
     residues = load_residues_from_pdb(pdb_path, skip_water=True)
     print(f"      {len(residues)} residui trovati")
 
-    # ── Step 2: ordinamento spaziale ──────────────────────────────────────
-    print("\n[2/4] Ordinamento per distanza dal centroide della tasca...")
+    # ── Step 2: ordinamento per catena ────────────────────────────────────
+    print("\n[2/4] Ordinamento per sequenza di catena (chain_id, res_seq)...")
     centroid = compute_pocket_centroid(residues)
-    residues = sort_residues_by_distance(residues, centroid)
     print(f"      Centroide tasca: ({centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}) Å")
     print(f"      Ordine: " + " -> ".join(r.label for r in residues[:5]) + " -> ...")
-
-    # ── Intensità HB geometrica a livello di tasca ────────────────────────
-    hb_strengths = compute_pocket_hbond_strengths(residues)
 
     # ── Calcolo SASA (se richiesto) ───────────────────────────────────────
     sasa_map = None
@@ -145,8 +132,7 @@ def run_pocket(
 
     for rec in residues:
         labeled = process_residue(
-            rec, k_strategy, max_k,
-            hb_atoms=hb_strengths.get(rec.label),
+            rec,
             surface_filter=surface_filter,
             sasa_threshold=sasa_threshold,
             sasa_map=sasa_map
@@ -193,7 +179,7 @@ def run_pocket(
             "pocket_centroid": centroid.tolist(),
             "n_residues": len(per_residue),
             "n_sites_total": len(flat_chain),
-            "ordering": "spatial_distance_from_centroid",
+            "ordering": "chain_sequence",
             "flat_chain": flat_chain,
         }
         json_path = os.path.join(output_dir, "pocket_chain.json")
@@ -310,7 +296,7 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     )
     fig1.suptitle(
         f"Reticoli locali — {fname}\n"
-        f"(ordinati per distanza dal centroide, sinistra-alto = più vicino)",
+        f"(ordinati per sequenza di catena)",
         fontsize=13, fontweight="bold", y=1.01,
     )
 
@@ -452,7 +438,7 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     ax3.set_ylabel("Numero di siti", fontsize=10)
     ax3.set_title(
         f"Composizione farmacofori per residuo — {fname}\n"
-        f"(ordinati per distanza dal centroide della tasca)",
+        f"(ordinati per sequenza di catena)",
         fontsize=12, fontweight="bold",
     )
     ax3.legend(loc="upper right", fontsize=8, framealpha=0.9)
@@ -490,10 +476,6 @@ if __name__ == "__main__":
 
     parser.add_argument("--pdb", required=True,
                         help="File PDB della tasca (es. data/raw/1a08_pocket.pdb)")
-    parser.add_argument("--k-strategy", default="active_features",
-                        choices=["active_features", "heavy_atoms", "fixed", "groups"])
-    parser.add_argument("--max-k", type=int, default=6,
-                        help="Max siti per residuo (default 6)")
     parser.add_argument("--output", default=None,
                         help="Directory dove salvare JSON e CSV")
     parser.add_argument("--plot", action="store_true",
@@ -508,8 +490,6 @@ if __name__ == "__main__":
     # Chiamata pulita alla funzione principale, passando gli argomenti esplicitamente
     run_pocket(
         pdb_path=args.pdb,
-        k_strategy=args.k_strategy,
-        max_k=args.max_k,
         output_dir=args.output,
         plot=args.plot,
         save_plot=args.save_plot,

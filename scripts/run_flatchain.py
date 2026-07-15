@@ -10,6 +10,7 @@ import numpy as np
 
 from amino_lattice.pdb_reader import load_residues_from_pdb
 from amino_lattice.feature_extraction import extract_features, FEATURE_SPECIFICITY
+from amino_lattice.abraham_hbond import assign_abraham_hb_intensities
 from amino_lattice.site_dedup_centroid import select_dedup_centroid
 from amino_lattice.lattice_fitting import fit_to_lattice_2d
 from amino_lattice.snapping import snap_to_lattice
@@ -46,6 +47,9 @@ flat_chain = []
 
 for rec in residues:
     features = extract_features(rec.mol, embed_3d=True)
+
+    # Intensità HB intrinseca (scale di Abraham)
+    assign_abraham_hb_intensities(features, res_name=rec.res_name, mol=rec.mol, atom_records=rec.atoms)
 
     if args.surface_filter:
         atom_positions = np.array([[a["x"], a["y"], a["z"]] for a in rec.atoms])
