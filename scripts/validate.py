@@ -30,10 +30,10 @@ from collections import Counter
 warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from amino_lattice.pdb_reader import mol_from_amino_acid
-from amino_lattice.feature_extraction import extract_features
-from amino_lattice.abraham_hbond import assign_abraham_hb_intensities
-from amino_lattice.site_selection import topological_order
+from qmode.pdb_reader import mol_from_amino_acid
+from qmode.feature_extraction import extract_features
+from qmode.abraham_hbond import assign_abraham_hb_intensities
+from qmode.site_selection import topological_order
 from scripts.run_pipeline import run_pipeline
 
 

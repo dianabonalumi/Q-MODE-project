@@ -33,7 +33,7 @@ Typical downstream uses: docking-score prediction, pocket similarity search, and
 
 ```
 Q-MODE-project/
-├── amino_lattice/
+├── qmode/
 │   ├── pdb_reader.py           # PDB parsing → residues with real 3D coordinates
 │   ├── feature_extraction.py   # RDKit-based pharmacophore feature extraction + Crippen h
 │   ├── abraham_hbond.py        # Abraham hb intensity lookup by functional group

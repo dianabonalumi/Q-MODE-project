@@ -21,15 +21,15 @@ import numpy as np
 # Assicurati che i moduli custom siano importabili
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from amino_lattice.surface_filter import compute_atom_sasa, filter_surface_features_by_coords
-from amino_lattice.pdb_reader import (
+from qmode.surface_filter import compute_atom_sasa, filter_surface_features_by_coords
+from qmode.pdb_reader import (
     load_residues_from_pdb,
     compute_pocket_centroid,
     AMINO_SMILES,
 )
-from amino_lattice.feature_extraction import extract_features
-from amino_lattice.site_selection import topological_order
-from amino_lattice.abraham_hbond import assign_abraham_hb_intensities
+from qmode.feature_extraction import extract_features
+from qmode.site_selection import topological_order
+from qmode.abraham_hbond import assign_abraham_hb_intensities
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -181,8 +181,8 @@ def run_pipeline(
         _plot_sequence(per_residue, flat_chain, pdb_path, save_plot)
 
     # ── Catena di qubit (Quantum Encoding) ────────────────────────────────
-    from amino_lattice.qubit_chain import build_qubit_chain, print_qubit_chain
-    from amino_lattice.qubit_chain import get_h_hb_intensities
+    from qmode.qubit_chain import build_qubit_chain, print_qubit_chain
+    from qmode.qubit_chain import get_h_hb_intensities
     
     h_pos, hb_pos = [], []
     for s in flat_chain:

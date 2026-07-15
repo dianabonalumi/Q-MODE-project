@@ -17,11 +17,11 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from amino_lattice.pdb_reader import load_residues_from_pdb
-from amino_lattice.feature_extraction import extract_features
-from amino_lattice.site_selection import topological_order
-from amino_lattice.surface_filter import compute_atom_sasa, filter_surface_features_by_coords
-from amino_lattice.abraham_hbond import assign_abraham_hb_intensities
+from qmode.pdb_reader import load_residues_from_pdb
+from qmode.feature_extraction import extract_features
+from qmode.site_selection import topological_order
+from qmode.surface_filter import compute_atom_sasa, filter_surface_features_by_coords
+from qmode.abraham_hbond import assign_abraham_hb_intensities
 
 
 COLOR_MAP = {
