@@ -42,14 +42,52 @@ AMINO_SMILES = {
     "VAL": "CC(C)C(N)C(=O)O",
     "HSD": "OC(=O)C(N)Cc1c[nH]cn1",
     "HSE": "OC(=O)C(N)Cc1cnc[nH]1",
-    "HSP": "OC(=O)C(N)Cc1c[nH+]cn1",
+    # HSP/HIP: istidina doppiamente protonata (imidazolio, carica +1).
+    # Nota: "OC(=O)C(N)Cc1c[nH+]cn1" (usato in precedenza) non kekulizza —
+    # bug pre-esistente, MolFromSmiles ritornava None. Forma Kekulé esplicita:
+    "HSP": "OC(=O)C(N)CC1=C[NH+]=CN1",
     "HIE": "OC(=O)C(N)Cc1cnc[nH]1",
     "HID": "OC(=O)C(N)Cc1c[nH]cn1",
-    "HIP": "OC(=O)C(N)Cc1c[nH+]cn1",
+    "HIP": "OC(=O)C(N)CC1=C[NH+]=CN1",
     "CYX": "SCC(N)C(=O)O",
 }
 
 BACKBONE_ATOMS = {"N", "CA", "C", "O", "OXT", "H", "HA", "HN1", "HN2", "HN3"}
+
+# Nomi PDB canonici per ciascun atomo pesante, nello stesso ordine in cui
+# compare nello SMILES di AMINO_SMILES (derivato per connettività, non a
+# occhio — verificato atomo per atomo con RDKit). Usati per costruire una
+# molecola "come da PDB" (nomi + PDBResidueInfo) anche senza un file PDB
+# reale, es. per la modalità "singolo amminoacido" di pipeline.py.
+AMINO_ATOM_NAMES = {
+    "ALA": ["CB", "CA", "N", "C", "O", "OXT"],
+    "ARG": ["NH2", "CZ", "NH1", "NE", "CD", "CG", "CB", "CA", "N", "C", "O", "OXT"],
+    "ASN": ["ND2", "CG", "OD1", "CB", "CA", "N", "C", "O", "OXT"],
+    "ASP": ["OD2", "CG", "OD1", "CB", "CA", "N", "C", "O", "OXT"],
+    "CYS": ["SG", "CB", "CA", "N", "C", "O", "OXT"],
+    "GLN": ["NE2", "CD", "OE1", "CG", "CB", "CA", "N", "C", "O", "OXT"],
+    "GLU": ["OE2", "CD", "OE1", "CG", "CB", "CA", "N", "C", "O", "OXT"],
+    "GLY": ["N", "CA", "C", "O", "OXT"],
+    "HIS": ["OXT", "C", "O", "CA", "N", "CB", "CG", "CD2", "NE2", "CE1", "ND1"],
+    "ILE": ["CD1", "CG1", "CB", "CG2", "CA", "N", "C", "O", "OXT"],
+    "LEU": ["CD1", "CG", "CD2", "CB", "CA", "N", "C", "O", "OXT"],
+    "LYS": ["NZ", "CE", "CD", "CG", "CB", "CA", "N", "C", "O", "OXT"],
+    "MET": ["CE", "SD", "CG", "CB", "CA", "N", "C", "O", "OXT"],
+    "PHE": ["OXT", "C", "O", "CA", "N", "CB", "CG", "CD1", "CE1", "CZ", "CE2", "CD2"],
+    "PRO": ["OXT", "C", "O", "CA", "CB", "CG", "CD", "N"],
+    "SER": ["OG", "CB", "CA", "N", "C", "O", "OXT"],
+    "THR": ["CG2", "CB", "OG1", "CA", "N", "C", "O", "OXT"],
+    "TRP": ["OXT", "C", "O", "CA", "N", "CB", "CG", "CD1", "NE1", "CE2", "CZ2", "CH2", "CZ3", "CE3", "CD2"],
+    "TYR": ["OXT", "C", "O", "CA", "N", "CB", "CG", "CD1", "CE1", "CZ", "OH", "CE2", "CD2"],
+    "VAL": ["CG1", "CB", "CG2", "CA", "N", "C", "O", "OXT"],
+    "HSD": ["OXT", "C", "O", "CA", "N", "CB", "CG", "CD2", "NE2", "CE1", "ND1"],
+    "HSE": ["OXT", "C", "O", "CA", "N", "CB", "CG", "CD2", "NE2", "CE1", "ND1"],
+    "HSP": ["OXT", "C", "O", "CA", "N", "CB", "CG", "CD2", "NE2", "CE1", "ND1"],
+    "HIE": ["OXT", "C", "O", "CA", "N", "CB", "CG", "CD2", "NE2", "CE1", "ND1"],
+    "HID": ["OXT", "C", "O", "CA", "N", "CB", "CG", "CD2", "NE2", "CE1", "ND1"],
+    "HIP": ["OXT", "C", "O", "CA", "N", "CB", "CG", "CD2", "NE2", "CE1", "ND1"],
+    "CYX": ["SG", "CB", "CA", "N", "C", "O", "OXT"],
+}
 
 
 @dataclass
@@ -212,6 +250,48 @@ def residue_to_mol(rec: ResidueRecord) -> Optional[object]:
 
     # idrogeni assenti nel PDB a raggi X, stimati dalla geometria reale
     mol = Chem.AddHs(mol, addCoords=True)
+
+    return mol
+
+
+def mol_from_amino_acid(res_name: str, chain_id: str = "A", res_seq: int = 1):
+    """
+    Costruisce la molecola RDKit di un amminoacido isolato (nessun PDB
+    reale): SMILES libero embeddato in 3D (ETKDG) + nomi PDB canonici
+    (AMINO_ATOM_NAMES) attaccati via PDBResidueInfo. Permette a
+    topological_order() e assign_abraham_hb_intensities() di funzionare
+    identicamente al caso "da PDB reale", senza coordinate cristallografiche.
+    """
+    if res_name not in AMINO_SMILES:
+        warnings.warn(f"Residuo sconosciuto: {res_name}")
+        return None
+
+    mol = Chem.MolFromSmiles(AMINO_SMILES[res_name])
+    if mol is None:
+        warnings.warn(f"{res_name}: SMILES non valido")
+        return None
+
+    names = AMINO_ATOM_NAMES[res_name]
+    if mol.GetNumAtoms() != len(names):
+        warnings.warn(f"{res_name}: AMINO_ATOM_NAMES disallineato con lo SMILES")
+        return None
+
+    mol = Chem.AddHs(mol)
+    params = AllChem.ETKDGv3()
+    params.randomSeed = 42
+    result = AllChem.EmbedMolecule(mol, params)
+    if result == -1:
+        AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+    else:
+        AllChem.MMFFOptimizeMolecule(mol)
+
+    for idx, name in enumerate(names):
+        info = Chem.AtomPDBResidueInfo()
+        info.SetName(f" {name:<3s}"[:4])
+        info.SetResidueName(res_name)
+        info.SetChainId(chain_id)
+        info.SetResidueNumber(res_seq)
+        mol.GetAtomWithIdx(idx).SetMonomerInfo(info)
 
     return mol
 

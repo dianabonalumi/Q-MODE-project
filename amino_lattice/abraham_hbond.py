@@ -40,6 +40,10 @@ ABRAHAM_TABLE: Dict[Tuple[str, str], AbrahamGroup] = {
     ("*", "O"): AbrahamGroup(
         alpha2H=None, beta2H=0.72,
         model_compound="N-metilacetamide", reference="Abraham (1994)"),
+    ("*", "OXT"): AbrahamGroup(
+        alpha2H=0.62, beta2H=None,
+        model_compound="acido acetico (carbossile C-terminale libero)",
+        reference="Abraham (2003/2005/2006/2007/2010/2012)"),
 
     # ── Asn / Gln: ammide primaria laterale ────────────────────────────
     ("ASN", "ND2"): AbrahamGroup(

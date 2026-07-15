@@ -30,9 +30,11 @@ from collections import Counter
 warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from amino_lattice import AminoLatticePipeline
-from amino_lattice.pdb_reader import AMINO_SMILES
-from scripts.run_pocket import run_pocket
+from amino_lattice.pdb_reader import mol_from_amino_acid
+from amino_lattice.feature_extraction import extract_features
+from amino_lattice.abraham_hbond import assign_abraham_hb_intensities
+from amino_lattice.site_selection import topological_order
+from scripts.run_pipeline import run_pipeline
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,6 +60,20 @@ STANDARD_20 = ["ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
                "TYR", "VAL"]
 
 
+def _map_amino_acid(name):
+    """Amminoacido isolato (nessun PDB reale): estrazione feature, intensità
+    h/hb (Crippen/Abraham), ordinamento topologico — stessa metodologia di
+    scripts/run_pipeline.py, applicata a un residuo costruito solo dal nome."""
+    mol = mol_from_amino_acid(name)
+    if mol is None:
+        return []
+    features = extract_features(mol, embed_3d=True)
+    if not features:
+        return []
+    assign_abraham_hb_intensities(features, res_name=name, mol=mol)
+    return topological_order(features, mol=mol)
+
+
 def sanity_amino_acids():
     print("\n" + "=" * 64)
     print("  A. SANITY CHIMICO — farmacofori dei 20 amminoacidi standard")
@@ -65,13 +81,11 @@ def sanity_amino_acids():
     print(f"  {'AA':4s} {'K':>2s}  {'farmacofori prodotti':38s}  esito")
     print("  " + "─" * 60)
 
-    pipe = AminoLatticePipeline(max_k=8, embed_3d=True)
     n_pass = 0
     n_checked = 0
     for aa in STANDARD_20:
-        smiles = AMINO_SMILES[aa]
-        result = pipe.run(smiles=smiles, name=aa)
-        types = [t for _, _, t in result.chain]
+        sites = _map_amino_acid(aa)
+        types = [s.feature_type for s in sites]
         present = set(types)
         comp = ", ".join(f"{t[:3]}×{c}" for t, c in Counter(types).most_common())
 
@@ -84,7 +98,7 @@ def sanity_amino_acids():
             verdict = "OK" if ok else "MANCA " + "/".join(exp)
             if ok:
                 n_pass += 1
-        print(f"  {aa:4s} {result.k:>2d}  {comp:38s}  {verdict}")
+        print(f"  {aa:4s} {len(sites):>2d}  {comp:38s}  {verdict}")
 
     print("  " + "─" * 60)
     print(f"  Controlli superati: {n_pass}/{n_checked} "
@@ -97,10 +111,10 @@ def sanity_amino_acids():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _run_quiet(pdb_path):
-    """Esegue run_pocket sopprimendo l'output, ritorna la flat_chain."""
+    """Esegue run_pipeline sopprimendo l'output, ritorna la flat_chain."""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        flat, per_res, segs = run_pocket(pdb_path)
+        flat, per_res, segs = run_pipeline(pdb_path)
     return flat, per_res, segs
 
 
@@ -121,7 +135,9 @@ def validate_pockets(pockets):
         hb = [s["intensity"] for s in flat
               if s["type"] in ("HBondDonor", "HBondAcceptor")]
         hb_mean = float(np.mean(hb)) if hb else 0.0
-        hb_strong = sum(1 for x in hb if x > 1.5)
+        # soglia ricalibrata sulla scala di Abraham (0-0.78), non più su
+        # quella geometrica (0-3) usata prima di hbond_geometry.py
+        hb_strong = sum(1 for x in hb if x > 0.5)
         rows.append((name, len(per_res), len(flat), comp, hb_mean, hb_strong, len(hb)))
 
     # Tabella riassuntiva
@@ -135,7 +151,7 @@ def validate_pockets(pockets):
               f"{comp.get('PosIonizable',0):>4d} {comp.get('NegIonizable',0):>4d}  "
               f"{hbm:>5.2f} {hbs:>3d}/{nhb:<3d}")
     print("  " + "─" * 70)
-    print("  HBμ = intensità HB media (geometrica);  forti = siti con HB > 1.5")
+    print("  HBμ = intensità HB media (scala di Abraham);  forti = siti con HB > 0.5")
     return rows
 
 
@@ -154,9 +170,9 @@ def validate_determinism(pockets):
         name = os.path.basename(path).replace("_pocket.pdb", "")
         flat1, _, _ = _run_quiet(path)
         flat2, _, _ = _run_quiet(path)
-        sig1 = [(s["residue"], s["i"], s["j"], s["type"], round(s["intensity"], 4))
+        sig1 = [(s["residue"], tuple(s["coords"]), s["type"], round(s["intensity"], 4))
                 for s in flat1]
-        sig2 = [(s["residue"], s["i"], s["j"], s["type"], round(s["intensity"], 4))
+        sig2 = [(s["residue"], tuple(s["coords"]), s["type"], round(s["intensity"], 4))
                 for s in flat2]
         ok = sig1 == sig2
         all_ok &= ok

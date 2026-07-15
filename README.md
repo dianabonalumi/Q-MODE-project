@@ -16,15 +16,14 @@ Typical downstream uses: docking-score prediction, pocket similarity search, and
 
 ## Pipeline Stages
 
-1. **Residue extraction** — parse residues and 3D coordinates from a PDB file (`pdb_reader.py`).
+1. **Residue extraction** — parse residues and real 3D coordinates directly from PDB atoms; bond orders assigned by structural comparison against a known template, not by positional overlay (`pdb_reader.py`).
 2. **Pharmacophoric feature computation** — RDKit-based atom feature extraction (`feature_extraction.py`).
-3. **Hydrogen-bond geometry** — physically grounded H-bond intensity from donor–acceptor distance and D–H···A angle, computed only between different residues (`hbond_geometry.py`).
-4. **Representative site selection** — chooses K sites per residue, with a configurable strategy (`site_selection.py`).
-5. **Lattice fitting** — projects 3D coordinates to 2D via PCA (`lattice_fitting.py`).
-6. **Snapping** — maps continuous 2D coordinates to integer lattice nodes `(i, j)` (`snapping.py`).
-7. **Labeling** — encodes each site's pharmacophore type and intensity (`labeling.py`).
-8. **Quantum encoding** — splits the flat chain into ligand-sized sliding-window segments and applies:
-   - **First encoding**: binarizes hydrophobic/H-bond intensity into 2-bit qubit basis states for Grover search.
+3. **Intensity assignment** — every site gets an intrinsic h/hb value: hydrophobic sites use Crippen atomic LogP contributions (`feature_extraction.py`); H-bond donor/acceptor/ionizable sites use Abraham solute descriptors, looked up by functional group and real PDB atom name (`abraham_hbond.py`).
+4. **Surface filter** (on by default) — keeps only solvent-exposed sites via SASA (`surface_filter.py`).
+5. **Topological ordering** — within each residue, sites are ordered by a BFS over the covalent bond graph starting from the backbone N atom (`site_selection.py`).
+6. **Chain assembly** — residues are concatenated in protein-chain order (`chain_id`, `res_seq`); each residue's sites inherit that position plus their own topological order, producing one flat, chain-consistent sequence.
+7. **Quantum encoding** — splits the flat chain into ligand-sized sliding-window segments and applies:
+   - **First encoding**: binarizes h/hb intensity into 2-bit qubit basis states for Grover search.
    - **Second encoding**: computes probability amplitudes `(a, b, c, d)` for amplitude-based distance calculations.
    (`quantum_encoding.py`, `qubit_chain.py`)
 
@@ -35,18 +34,19 @@ Typical downstream uses: docking-score prediction, pocket similarity search, and
 ```
 Q-MODE-project/
 ├── amino_lattice/
-│   ├── pdb_reader.py           # PDB parsing → residues with 3D coordinates
-│   ├── feature_extraction.py   # RDKit-based pharmacophore feature extraction
-│   ├── hbond_geometry.py       # Distance/angle-based hydrogen-bond intensity model
-│   ├── site_selection.py       # K representative sites per residue
-│   ├── lattice_fitting.py      # 3D → 2D projection (PCA)
-│   ├── snapping.py             # Continuous 2D coordinates → integer lattice nodes (i, j)
-│   ├── labeling.py             # Pharmacophore type/intensity labeling
+│   ├── pdb_reader.py           # PDB parsing → residues with real 3D coordinates
+│   ├── feature_extraction.py   # RDKit-based pharmacophore feature extraction + Crippen h
+│   ├── abraham_hbond.py        # Abraham hb intensity lookup by functional group
+│   ├── surface_filter.py       # SASA-based solvent-exposure filter
+│   ├── site_selection.py       # Topological (BFS) site ordering
 │   ├── quantum_encoding.py     # First/second quantum encoding (Grover / amplitude)
 │   ├── qubit_chain.py          # Sliding-window segmentation + qubit chain assembly
-│   └── pipeline.py             # AminoLatticePipeline: SMILES, batch, and PDB entry points
+│   ├── lattice_fitting.py      # 3D → 2D projection (PCA) — utility, not used by the main pipeline
+│   ├── snapping.py             # 2D coords → integer lattice nodes — utility, not used by the main pipeline
+│   └── labeling.py             # One-hot pharmacophore labeling — utility, not used by the main pipeline
 ├── scripts/
-│   ├── run_pocket.py           # Main CLI entry point for pocket PDB files
+│   ├── run_pipeline.py         # Main CLI entry point (whole protein or cropped pocket PDB)
+│   ├── plot_residue_chain.py   # 3D structure + 1D chain visualization for a single residue
 │   ├── make_pockets.py         # Downloads sample PDB structures and crops binding pockets
 │   └── validate.py             # Chemical sanity checks, real-pocket runs, determinism checks
 ├── data/
@@ -104,26 +104,31 @@ python scripts/make_pockets.py
 ### 2. Run the pipeline on a pocket
 
 ```bash
-python scripts/run_pocket.py --pdb data/raw/3PTB_pocket.pdb --plot
+python scripts/run_pipeline.py --pdb data/raw/3PTB_pocket.pdb --plot
 ```
 
 ```bash
-# Save JSON/CSV outputs and a static plot image
-python scripts/run_pocket.py --pdb data/raw/3PTB_pocket.pdb \
+# Save JSON/CSV outputs and static plot images
+python scripts/run_pipeline.py --pdb data/raw/3PTB_pocket.pdb \
     --output data/processed/ \
     --save-plot data/processed/pocket.png
 ```
 
-### Command-line Options
+```bash
+# Visualize a single residue: 3D structure + its 1D site chain
+python scripts/plot_residue_chain.py --pdb data/raw/3PTB_pocket.pdb --chain A --resseq 189
+```
+
+### Command-line Options (`run_pipeline.py`)
 
 | Option | Default | Description |
 |---|---|---|
-| `--pdb` | *(required)* | Path to the pocket PDB file |
+| `--pdb` | *(required)* | Path to the PDB file (whole protein or cropped pocket) |
 | `--output` | `None` | Directory for JSON/CSV output files |
-| `--plot` | `False` | Show an interactive 2D lattice visualization |
-| `--save-plot` | `None` | Save the lattice plot as a PNG image |
-| `--k-strategy` | `active_features` | Site-count selection strategy: `active_features`, `heavy_atoms`, `fixed`, or `groups` |
-| `--max-k` | `6` | Maximum number of interaction sites per residue |
+| `--plot` | `False` | Show an interactive visualization |
+| `--save-plot` | `None` | Save plots as PNG images |
+| `--no-surface-filter` | *(filter on by default)* | Disable the SASA solvent-exposure filter (keep buried sites too) |
+| `--sasa-threshold` | `1.0` | SASA threshold (Å²) for considering an atom solvent-exposed |
 | `--ligand-size` | `3` | Sliding-window size (in sites) used for quantum-chain segmentation |
 
 ---
@@ -138,9 +143,9 @@ python scripts/run_pocket.py --pdb data/raw/3PTB_pocket.pdb \
   "pocket_centroid": [12.4, 8.1, -3.2],
   "n_residues": 18,
   "n_sites_total": 41,
-  "ordering": "spatial_distance_from_centroid",
+  "ordering": "chain_sequence",
   "flat_chain": [
-    {"residue": "A156_ILE", "i": 2, "j": -3, "type": "Hydrophobe", "intensity": 0.812}
+    {"residue": "A156_ILE", "coords": [11.2, 7.4, -2.1], "type": "Hydrophobe", "intensity": 0.812}
   ]
 }
 ```

@@ -1,7 +1,7 @@
 """
 Visualizza un amminoacido: struttura 3D con i siti farmacoforici
 superficiali, e la loro disposizione nella catena 1D (stesso ordinamento
-topologico di run_pocket.py).
+topologico di run_pipeline.py).
 
 Uso:
     python scripts/plot_residue_chain.py --pdb data/raw/4dfr_pocket.pdb --chain A --resseq 30
@@ -53,7 +53,7 @@ def find_residue(residues, chain_id: str, res_seq: int):
 
 
 def get_ordered_sites(rec, surface_filter=False, sasa_map=None, sasa_threshold=1.0):
-    """Stesso Step 2+3 di run_pocket.py: feature, intensità hb (Abraham),
+    """Stesso Step 2+3 di run_pipeline.py: feature, intensità hb (Abraham),
     filtro SASA opzionale, ordinamento topologico (no K-Means)."""
     features = extract_features(rec.mol, embed_3d=True)
     if not features:

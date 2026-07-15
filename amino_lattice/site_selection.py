@@ -152,25 +152,22 @@ def _cluster_features(features: List[AtomFeature], max_k: int) -> int:
 def select_representative_sites(
     features: List[AtomFeature],
     k: int,
-    mol=None,
+    mol,
 ) -> List[AtomFeature]:
     """
     Data la lista di feature e il K scelto, seleziona/aggrega K siti
     rappresentativi tramite K-Means sulle coordinate 3D, poi li riordina
-    secondo la topologia covalente della molecola (se mol è disponibile).
+    secondo la topologia covalente della molecola (BFS sui legami RDKit,
+    partendo dall'atomo pesante con indice minore; ogni sito mappato
+    all'atomo pesante più vicino al suo centroide).
 
     Ogni cluster → un sito con:
       - coordinate = centroide del cluster
       - tipo       = tipo di feature più frequente nel cluster
       - intensità  = somma intensità del cluster
 
-    Ordinamento topologico
-    ----------------------
-    Se mol è fornita, i siti vengono riordinati tramite BFS sul grafo dei
-    legami RDKit, partendo dall'atomo pesante con indice minore.
-    Ogni sito viene mappato all'atomo pesante più vicino al suo centroide;
-    i siti seguono l'ordine di visita BFS di quegli atomi.
-    Se mol=None, l'ordinamento è spaziale lungo il primo asse PCA.
+    mol deve avere un conformero 3D valido (stesse coordinate delle
+    feature). Nessun fallback: se manca, topological_order solleva errore.
 
     Returns
     -------
@@ -223,87 +220,65 @@ def select_representative_sites(
 
 def topological_order(
     sites: List[AtomFeature],
-    mol=None,
+    mol,
 ) -> List[AtomFeature]:
     """
-    Riordina i siti secondo la topologia covalente della molecola.
+    Riordina i siti secondo la topologia covalente della molecola:
+      1. Raccoglie le coordinate degli atomi pesanti dal conformatore RDKit.
+      2. Mappa ogni sito al suo atomo rappresentativo più vicino (NN search).
+      3. Esegue una BFS sul grafo dei legami partendo dall'atomo con idx più
+         basso (convenzione: azoto N-terminale del backbone).
+      4. I siti vengono restituiti nell'ordine di primo incontro BFS.
 
-    Strategia
-    ---------
-    1. Se mol è disponibile:
-       a. Raccoglie le coordinate degli atomi pesanti dal conformatore RDKit.
-       b. Mappa ogni sito al suo atomo rappresentativo più vicino (NN search).
-       c. Esegue una BFS sul grafo dei legami partendo dall'atomo con idx più
-          basso (convenzione: azoto N-terminale del backbone).
-       d. I siti vengono restituiti nell'ordine di primo incontro BFS.
-    2. Se mol=None o la molecola non ha un conformatore:
-       Ordina i siti lungo il primo asse PCA delle loro coordinate 3D
-       (approssima l'ordine lungo la catena principale).
+    mol deve avere un conformero 3D valido — nessun fallback spaziale.
     """
     from collections import deque
+    from rdkit import Chem
 
-    if mol is not None:
-        try:
-            from rdkit import Chem
-            mol_no_h = Chem.RemoveHs(mol)
-            if mol_no_h.GetNumConformers() == 0:
-                raise RuntimeError("no conformer")
+    if len(sites) <= 1:
+        return sites
 
-            conf = mol_no_h.GetConformer()
-            heavy_coords = np.array([
-                [conf.GetAtomPosition(i).x,
-                 conf.GetAtomPosition(i).y,
-                 conf.GetAtomPosition(i).z]
-                for i in range(mol_no_h.GetNumAtoms())
-            ])  # shape (N_heavy, 3)
+    mol_no_h = Chem.RemoveHs(mol)
+    if mol_no_h.GetNumConformers() == 0:
+        raise ValueError("topological_order: mol non ha un conformero 3D")
 
-            # Mappa ogni sito → indice atomo pesante più vicino
-            site_to_atom: List[int] = []
-            for site in sites:
-                dists = np.linalg.norm(heavy_coords - site.coords, axis=1)
-                site_to_atom.append(int(np.argmin(dists)))
+    conf = mol_no_h.GetConformer()
+    heavy_coords = np.array([
+        [conf.GetAtomPosition(i).x,
+         conf.GetAtomPosition(i).y,
+         conf.GetAtomPosition(i).z]
+        for i in range(mol_no_h.GetNumAtoms())
+    ])  # shape (N_heavy, 3)
 
-            # Costruisce il grafo di adiacenza (solo atomi pesanti)
-            adj: dict[int, list[int]] = {i: [] for i in range(mol_no_h.GetNumAtoms())}
-            for bond in mol_no_h.GetBonds():
-                a, b = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-                adj[a].append(b)
-                adj[b].append(a)
+    # Mappa ogni sito → indice atomo pesante più vicino
+    site_to_atom: List[int] = []
+    for site in sites:
+        dists = np.linalg.norm(heavy_coords - site.coords, axis=1)
+        site_to_atom.append(int(np.argmin(dists)))
 
-            # BFS partendo dall'atomo rappresentativo con indice minore
-            start = min(site_to_atom)
-            visited: dict[int, int] = {}   # atom_idx → ordine di visita
-            queue: deque = deque([start])
-            order = 0
-            seen = set([start])
-            while queue:
-                node = queue.popleft()
-                visited[node] = order
-                order += 1
-                for nb in sorted(adj[node]):   # sorted → determinismo
-                    if nb not in seen:
-                        seen.add(nb)
-                        queue.append(nb)
+    # Grafo di adiacenza (solo atomi pesanti)
+    adj: dict[int, list[int]] = {i: [] for i in range(mol_no_h.GetNumAtoms())}
+    for bond in mol_no_h.GetBonds():
+        a, b = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        adj[a].append(b)
+        adj[b].append(a)
 
-            # Ordina i siti per ordine BFS del loro atomo rappresentativo
-            bfs_order = [visited.get(atom_idx, len(sites) + i)
-                         for i, atom_idx in enumerate(site_to_atom)]
-            ordered = [s for _, s in sorted(zip(bfs_order, sites), key=lambda x: x[0])]
-            return ordered
+    # BFS partendo dall'atomo rappresentativo con indice minore
+    start = min(site_to_atom)
+    visited: dict[int, int] = {}   # atom_idx → ordine di visita
+    queue: deque = deque([start])
+    order = 0
+    seen = set([start])
+    while queue:
+        node = queue.popleft()
+        visited[node] = order
+        order += 1
+        for nb in sorted(adj[node]):   # sorted → determinismo
+            if nb not in seen:
+                seen.add(nb)
+                queue.append(nb)
 
-        except Exception:
-            pass   # fallback spaziale
-
-    # Fallback: ordina lungo il primo asse PCA
-    site_coords = np.array([s.coords for s in sites])
-    if len(sites) > 1:
-        mean = site_coords.mean(axis=0)
-        centered = site_coords - mean
-        cov = centered.T @ centered
-        eigvals, eigvecs = np.linalg.eigh(cov)
-        pc1 = eigvecs[:, -1]                     # primo componente principale
-        projections = centered @ pc1
-        order = np.argsort(projections)
-        return [sites[i] for i in order]
-
-    return sites
+    # Ordina i siti per ordine BFS del loro atomo rappresentativo
+    bfs_order = [visited.get(atom_idx, len(sites) + i)
+                 for i, atom_idx in enumerate(site_to_atom)]
+    return [s for _, s in sorted(zip(bfs_order, sites), key=lambda x: x[0])]
