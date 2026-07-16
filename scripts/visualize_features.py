@@ -5,8 +5,8 @@ Usa la proteina completa come contesto e mostra la superficie molecolare.
 import argparse
 import numpy as np
 
-from amino_lattice.pdb_reader import load_residues_from_pdb
-from amino_lattice.feature_extraction import extract_features
+from qmode.pdb_reader import load_residues_from_pdb
+from qmode.feature_extraction import extract_features
 
 COLORS = {
     "HBondDonor":    "blue",
@@ -26,7 +26,7 @@ parser.add_argument("--sasa-threshold", type=float, default=0.5)
 parser.add_argument("--output", default="features_visualization.html")
 args = parser.parse_args()
 
-from amino_lattice.surface_filter import compute_atom_sasa
+from qmode.surface_filter import compute_atom_sasa
 sasa_map = compute_atom_sasa(args.pdb_pocket)
 
 residues = load_residues_from_pdb(args.pdb_pocket)

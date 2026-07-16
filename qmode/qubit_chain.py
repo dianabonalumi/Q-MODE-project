@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Dict
 
-from amino_lattice.quantum_encoding import first_encoding, second_encoding
+from qmode.quantum_encoding import first_encoding, second_encoding
 
 
 @dataclass

@@ -6,25 +6,22 @@ Eseguire con: pytest tests/
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import numpy as np
 import pytest
 from rdkit import Chem
+from rdkit.Chem import AllChem
 
-from amino_lattice import AminoLatticePipeline
-from amino_lattice.feature_extraction import extract_features, mol_from_smiles
-from amino_lattice.site_selection import choose_k, select_representative_sites
-from amino_lattice.lattice_fitting import fit_to_lattice_2d
-from amino_lattice.snapping import snap_to_lattice
-from amino_lattice.labeling import label_sites, encode_chain
+from qmode.feature_extraction import extract_features, mol_from_smiles
+from qmode.site_selection import topological_order
+from qmode.pdb_reader import mol_from_amino_acid
+from qmode.abraham_hbond import assign_abraham_hb_intensities
 
-# SMILES dei 20 AA standard
-STANDARD_AA = {
-    "ALA": "CC(N)C(=O)O",
-    "GLY": "NCC(=O)O",
-    "TRP": "OC(=O)C(N)Cc1c[nH]c2ccccc12",
-    "PHE": "OC(=O)C(N)Cc1ccccc1",
-    "SER": "OCC(N)C(=O)O",
-}
+def _embed(mol):
+    """AddHs + conformero 3D (ETKDG) — necessario per topological_order."""
+    mol = Chem.AddHs(mol)
+    params = AllChem.ETKDGv3()
+    params.randomSeed = 42
+    AllChem.EmbedMolecule(mol, params)
+    return mol
 
 
 # ─── Feature extraction ───────────────────────────────────────────────────────
@@ -50,105 +47,43 @@ def test_features_have_3d_coords():
         assert f.coords.shape == (3,), f"coords shape attesa (3,), trovata {f.coords.shape}"
 
 
-# ─── Site selection ───────────────────────────────────────────────────────────
+# ─── Ordinamento topologico ────────────────────────────────────────────────────
 
-def test_choose_k_active_features():
-    mol = mol_from_smiles("CC(N)C(=O)O")
-    features = extract_features(mol)
-    k = choose_k(features, strategy="active_features", max_k=8)
-    assert 1 <= k <= 8
+def test_topological_order_returns_all_sites():
+    mol = _embed(mol_from_smiles("OC(=O)C(N)Cc1c[nH]c2ccccc12"))  # TRP
+    features = extract_features(mol, embed_3d=True)
+    sites = topological_order(features, mol=mol)
+    assert len(sites) == len(features)
 
-def test_choose_k_fixed():
-    mol = mol_from_smiles("CC(N)C(=O)O")
-    features = extract_features(mol)
-    k = choose_k(features, strategy="fixed", fixed_k=5)
-    assert k == 5
-
-def test_select_sites_returns_k():
-    mol = mol_from_smiles("OC(=O)C(N)Cc1c[nH]c2ccccc12")  # TRP
-    features = extract_features(mol)
-    k = 4
-    sites = select_representative_sites(features, k)
-    assert len(sites) == k
+def test_topological_order_single_site():
+    mol = _embed(mol_from_smiles("CC(N)C(=O)O"))
+    features = extract_features(mol, embed_3d=True)[:1]
+    sites = topological_order(features, mol=mol)
+    assert sites == features
 
 
-# ─── Fitting geometrico ───────────────────────────────────────────────────────
+# ─── Pipeline end-to-end (amminoacido isolato, stessa metodologia di
+#     scripts/run_pipeline.py: estrazione + h/hb + ordinamento topologico) ────
 
-def test_fit_pca_shape():
-    mol = mol_from_smiles("OC(=O)C(N)Cc1ccccc1")
-    features = extract_features(mol)
-    sites = select_representative_sites(features, 4)
-    coords_2d = fit_to_lattice_2d(sites, method="pca")
-    assert coords_2d.shape == (4, 2)
+def _map_amino_acid(name):
+    mol = mol_from_amino_acid(name)
+    features = extract_features(mol, embed_3d=True)
+    assign_abraham_hb_intensities(features, res_name=name, mol=mol)
+    return topological_order(features, mol=mol)
 
-def test_fit_mds_shape():
-    mol = mol_from_smiles("OC(=O)C(N)Cc1ccccc1")
-    features = extract_features(mol)
-    sites = select_representative_sites(features, 4)
-    coords_2d = fit_to_lattice_2d(sites, method="mds")
-    assert coords_2d.shape == (4, 2)
+STANDARD_20_NAMES = ["ALA", "GLY", "TRP", "PHE", "SER"]
 
-
-# ─── Snapping ─────────────────────────────────────────────────────────────────
-
-def test_snap_round_returns_ints():
-    coords = np.array([[1.3, -0.7], [2.8, 1.1]])
-    nodes = snap_to_lattice(coords, strategy="round")
-    assert len(nodes) == 2
-    for i, j in nodes:
-        assert isinstance(i, int)
-        assert isinstance(j, int)
-
-def test_snap_hungarian_no_collisions():
-    coords = np.array([[0.1, 0.1], [0.2, 0.2], [3.0, 3.0]])
-    nodes = snap_to_lattice(coords, strategy="hungarian")
-    assert len(nodes) == len(set(nodes)), "Collisione rilevata nei nodi"
-
-
-# ─── Labeling ─────────────────────────────────────────────────────────────────
-
-def test_label_one_hot_shape():
-    mol = mol_from_smiles("CC(N)C(=O)O")
-    features = extract_features(mol)
-    sites = select_representative_sites(features, 3)
-    coords_2d = fit_to_lattice_2d(sites)
-    nodes = snap_to_lattice(coords_2d)
-    labeled = label_sites(sites, nodes, mode="one_hot")
-    assert len(labeled) == 3
-    for ls in labeled:
-        assert ls.label.shape == (6,)  # 6 tipi farmacofori
-
-def test_encode_chain_shape():
-    mol = mol_from_smiles("CC(N)C(=O)O")
-    features = extract_features(mol)
-    sites = select_representative_sites(features, 3)
-    coords_2d = fit_to_lattice_2d(sites)
-    nodes = snap_to_lattice(coords_2d)
-    labeled = label_sites(sites, nodes, mode="one_hot")
-    mat = encode_chain(labeled)
-    assert mat.shape == (3, 8)  # 2 coord + 6 one-hot
-
-
-# ─── Pipeline end-to-end ──────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("aa,smiles", STANDARD_AA.items())
-def test_pipeline_all_standard_aa(aa, smiles):
-    pipeline = AminoLatticePipeline(max_k=8, embed_3d=True)
-    result = pipeline.run(smiles=smiles, name=aa)
-    assert result.k >= 1
-    assert len(result.chain) == result.k
-    assert result.stress >= 0.0
+@pytest.mark.parametrize("aa", STANDARD_20_NAMES)
+def test_pipeline_all_standard_aa(aa):
+    sites = _map_amino_acid(aa)
+    assert len(sites) >= 1
 
 def test_pipeline_chain_format():
-    pipeline = AminoLatticePipeline()
-    result = pipeline.run("CC(N)C(=O)O", name="ALA")
-    for i, j, t in result.chain:
-        assert isinstance(i, int)
-        assert isinstance(j, int)
-        assert isinstance(t, str)
+    sites = _map_amino_acid("ALA")
+    for s in sites:
+        assert isinstance(s.feature_type, str)
+        assert isinstance(s.intensity, float)
 
 def test_pipeline_batch():
-    pipeline = AminoLatticePipeline(max_k=6)
-    records = [{"smiles": s, "name": n} for n, s in STANDARD_AA.items()]
-    results = pipeline.run_batch(records)
-    assert len(results) == len(STANDARD_AA)
+    results = [_map_amino_acid(aa) for aa in STANDARD_20_NAMES]
+    assert len(results) == len(STANDARD_20_NAMES)
