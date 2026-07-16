@@ -30,6 +30,7 @@ from qmode.pdb_reader import (
 from qmode.feature_extraction import extract_features
 from qmode.site_selection import topological_order
 from qmode.abraham_hbond import assign_abraham_hb_intensities
+from qmode.site_dedup_centroid import select_dedup_centroid
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -66,6 +67,15 @@ def process_residue(rec, surface_filter=True, sasa_threshold=1.0, sasa_map=None)
             )
             if not features:
                 return None
+
+        # ── M3: deduplicazione con centroide locale ──────────────────────────
+        # Fonde i siti farmacofori vicini dello stesso tipo in un unico sito
+        # con coordinate = centroide del gruppo. I siti lontani dello stesso
+        # tipo vengono mantenuti con le loro coordinate originali.
+        features = select_dedup_centroid(features, mol=rec.mol, max_sites=12)
+        if not features:
+            return None
+        # ────────────────────────────────────────────────────────────────────
 
         # Step 3: tutti i siti, ordinati per topologia covalente (no K-Means)
         sites = topological_order(features, mol=rec.mol)
@@ -183,7 +193,7 @@ def run_pipeline(
     # ── Catena di qubit (Quantum Encoding) ────────────────────────────────
     from qmode.qubit_chain import build_qubit_chain, print_qubit_chain
     from qmode.qubit_chain import get_h_hb_intensities
-    
+
     h_pos, hb_pos = [], []
     for s in flat_chain:
         h, hb = get_h_hb_intensities(s)
@@ -207,11 +217,10 @@ def run_pipeline(
         ligand_size=args_ligand_size,
         h_min=h_min, h_max=h_max, hb_min=hb_min, hb_max=hb_max
     )
-    
+
     print_qubit_chain(segments)
 
     if output_dir:
-        # Salva qubit chain come JSON
         qubit_data = {
             "ligand_size": args_ligand_size,
             "h_range": [h_min, h_max],
@@ -240,11 +249,6 @@ def run_pipeline(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
-    """
-    Due figure separate, ciascuna salvata/mostrata indipendentemente:
-      Fig 1 — Sequenza flat: heatmap tipo × posizione
-      Fig 2 — Barchart composizione farmacofori per residuo
-    """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
 
@@ -260,9 +264,6 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     fname = os.path.splitext(os.path.basename(pdb_path))[0]
     n_res = len(per_residue)
 
-    # ═════════════════════════════════════════════════════════════════════
-    # FIGURA 1 — Heatmap sequenza flat
-    # ═════════════════════════════════════════════════════════════════════
     n_sites = len(flat_chain)
     n_types = len(FEAT_TYPES)
     matrix  = np.zeros((n_types, n_sites))
@@ -313,9 +314,6 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
         fig2.savefig(p, dpi=150, bbox_inches="tight")
         print(f"  Plot 1 (sequenza flat) salvato in: {p}")
 
-    # ═════════════════════════════════════════════════════════════════════
-    # FIGURA 2 — Barchart impilato
-    # ═════════════════════════════════════════════════════════════════════
     from collections import Counter
     res_order = [e["record"].label for e in per_residue]
     counts    = {res: Counter() for res in res_order}
@@ -350,7 +348,6 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
         p = save_path.replace(".png", "_composition.png")
         fig3.savefig(p, dpi=150, bbox_inches="tight")
         print(f"  Plot 2 (composizione) salvato in: {p}")
-
 
     if not save_path:
         plt.show()
@@ -387,10 +384,9 @@ if __name__ == "__main__":
                         help="Salva il plot come PNG")
     parser.add_argument("--ligand-size", type=int, default=3,
                         help="Dimensione del ligando in siti (default 3)")
-    
+
     args = parser.parse_args()
 
-    # Chiamata pulita alla funzione principale, passando gli argomenti esplicitamente
     run_pipeline(
         pdb_path=args.pdb,
         output_dir=args.output,

@@ -49,18 +49,8 @@ FEATURE_TYPES = [
 # Indice intero per ogni tipo (usato nel labeling one-hot)
 FEATURE_INDEX = {ft: i for i, ft in enumerate(FEATURE_TYPES)}
 
-# Specificità farmacoforica: quanto un tipo è informativo/raro. Quando più tipi
-# coincidono nello stesso cluster, il tipo PIÙ SPECIFICO deve prevalere — un
-# anello aromatico o un gruppo carico non va mascherato dai numerosi atomi
-# idrofobici che lo circondano (che sono generici).
-FEATURE_SPECIFICITY = {
-    "Aromatic":      5,
-    "HBondDonor":    4,
-    "HBondAcceptor": 4,
-    "NegIonizable":  3,
-    "PosIonizable":  3,
-    "Hydrophobe":    1,
-}
+
+
 
 # Le famiglie di RDKit (BaseFeatures.fdef) usano nomi diversi dai nostri:
 # "Donor"/"Acceptor" invece di "HBondDonor"/"HBondAcceptor", e una famiglia
