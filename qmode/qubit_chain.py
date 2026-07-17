@@ -43,6 +43,22 @@ def get_h_hb_intensities(site: dict) -> tuple[float, float]:
         return 0.0, 0.0
 
 
+def compute_h_hb_thresholds(flat_chain: List[dict], h_min: float = 0.0, h_max: float = 1.0,
+                             hb_min: float = 0.0, hb_max: float = 1.0) -> tuple[float, float]:
+    """
+    Soglie di binarizzazione = mediana dei valori ATTIVI di ciascun canale.
+    La mediana separa i siti ~50/50 ed evita la catena dominata da zeri che
+    si avrebbe usando la media del range (vedi quantum_encoding.first_encoding).
+    """
+    import statistics
+
+    h_active = [get_h_hb_intensities(s)[0] for s in flat_chain if get_h_hb_intensities(s)[0] > 0]
+    hb_active = [get_h_hb_intensities(s)[1] for s in flat_chain if get_h_hb_intensities(s)[1] > 0]
+    h_thr = statistics.median(h_active) if h_active else (h_min + h_max) / 2.0
+    hb_thr = statistics.median(hb_active) if hb_active else (hb_min + hb_max) / 2.0
+    return h_thr, hb_thr
+
+
 def build_qubit_chain(
     flat_chain: List[dict],
     ligand_size: int,
@@ -55,21 +71,13 @@ def build_qubit_chain(
     Crea la catena di segmenti e codifica gli stati quantistici.
     Implementa la logica di 'protein shift' (sliding window) del paper.
     """
-    import statistics
-
     segments = []
     n_sites = len(flat_chain)
 
     if n_sites < ligand_size:
         return []
 
-    # Soglie di binarizzazione = mediana dei valori ATTIVI di ciascun canale.
-    # La mediana separa i siti ~50/50 ed evita la catena dominata da zeri che
-    # si avrebbe usando la media del range (vedi quantum_encoding.first_encoding).
-    h_active = [get_h_hb_intensities(s)[0] for s in flat_chain if get_h_hb_intensities(s)[0] > 0]
-    hb_active = [get_h_hb_intensities(s)[1] for s in flat_chain if get_h_hb_intensities(s)[1] > 0]
-    h_thr = statistics.median(h_active) if h_active else (h_min + h_max) / 2.0
-    hb_thr = statistics.median(hb_active) if hb_active else (hb_min + hb_max) / 2.0
+    h_thr, hb_thr = compute_h_hb_thresholds(flat_chain, h_min, h_max, hb_min, hb_max)
 
     for i in range(n_sites - ligand_size + 1):
         segment_sites = flat_chain[i:i+ligand_size]

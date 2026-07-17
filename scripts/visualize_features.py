@@ -35,6 +35,8 @@ all_features = []
 filtered_features = []
 
 for rec in residues:
+    if rec.mol is None:
+        continue
     features = extract_features(rec.mol, embed_3d=True)
     atom_positions = np.array([[a["x"], a["y"], a["z"]] for a in rec.atoms])
     atom_names = [a["name"].strip() for a in rec.atoms]

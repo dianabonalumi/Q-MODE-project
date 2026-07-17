@@ -10,6 +10,8 @@ setup(
         "pandas",
         "matplotlib",
         "biopython",
+        "qiskit",
+        "qiskit-aer",
     ],
     python_requires=">=3.9",
 )

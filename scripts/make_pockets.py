@@ -4,7 +4,7 @@ Estrazione di tasche di legame da strutture PDB reali
 Scarica alcune strutture dal PDB e, per ciascuna, ritaglia la TASCA come
 l'insieme dei residui proteici con almeno un atomo entro CUTOFF Å da un atomo
 del ligando (HETATM non-solvente). Le tasche risultanti vengono salvate in
-data/raw/ e usate per la validazione (scripts/validate.py).
+data/raw/.
 
 Uso:
     python scripts/make_pockets.py
