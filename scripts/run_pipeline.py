@@ -31,6 +31,7 @@ from qmode.feature_extraction import extract_features
 from qmode.site_selection import topological_order
 from qmode.abraham_hbond import assign_abraham_hb_intensities
 from qmode.site_dedup_centroid import select_dedup_centroid
+from qmode.ligand_reader import load_ligand_from_pdb
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -87,6 +88,37 @@ def process_residue(rec, surface_filter=True, sasa_threshold=1.0, sasa_map=None)
         return None
 
 
+def process_ligand(ligand_rec, max_sites=6):
+    """Stessa pipeline locale di process_residue, applicata al ligando:
+    extract_features -> assign_abraham_hb_intensities (no-op per un ligando,
+    la tabella di Abraham è indicizzata per amminoacido) -> dedup centroide
+    -> ordinamento topologico. Nessun filtro SASA (non è una superficie
+    proteica). Ritorna la lista di AtomFeature ordinati, o None."""
+    if ligand_rec is None or ligand_rec.mol is None:
+        return None
+
+    try:
+        features = extract_features(ligand_rec.mol, embed_3d=True)
+        if not features:
+            warnings.warn(f"  {ligand_rec.label}: nessuna feature estratta, skip")
+            return None
+
+        assign_abraham_hb_intensities(
+            features, res_name=ligand_rec.res_name, mol=ligand_rec.mol,
+            atom_records=ligand_rec.atoms
+        )
+
+        features = select_dedup_centroid(features, mol=ligand_rec.mol, max_sites=max_sites)
+        if not features:
+            return None
+
+        return topological_order(features, mol=ligand_rec.mol)
+
+    except Exception as e:
+        warnings.warn(f"  {ligand_rec.label}: errore — {e}")
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_pipeline(
@@ -96,7 +128,10 @@ def run_pipeline(
     save_plot=None,
     args_ligand_size=3,
     surface_filter=True,
-    sasa_threshold=1.0
+    sasa_threshold=1.0,
+    ligand_pdb=None,
+    ligand_code=None,
+    ligand_max_sites=3
 ):
     print(f"\n{'='*60}")
     print(f"  Pipeline Mapping: {os.path.basename(pdb_path)}")
@@ -241,7 +276,60 @@ def run_pipeline(
             json.dump(qubit_data, f, indent=2)
         print(f"\n  Quantum JSON salvato in: {qjson_path}")
 
-    return flat_chain, per_residue, segments
+    # ── Grover search (ricerca quantistica vera e propria) ────────────────
+    grover_candidates = None
+    if ligand_pdb is not None:
+        from qmode.qubit_chain import compute_h_hb_thresholds
+        from qmode.grover import search_docking_sites
+
+        print(f"\n{'-'*60}")
+        print(f"  Estrazione ligando da: {os.path.basename(ligand_pdb)}")
+        print(f"{'-'*60}")
+
+        ligand_rec = load_ligand_from_pdb(ligand_pdb, ligand_code=ligand_code)
+        if ligand_rec is None:
+            print("  Nessun gruppo HETATM valido trovato come ligando (o troppo piccolo).")
+        else:
+            print(f"  Ligando: {ligand_rec.label}")
+            ligand_sites = process_ligand(ligand_rec, max_sites=ligand_max_sites)
+            if not ligand_sites:
+                print(f"  {ligand_rec.label}: nessun sito farmacoforo estratto, Grover saltato.")
+            else:
+                ligand_hbs = [get_h_hb_intensities({"type": s.feature_type, "intensity": s.intensity})
+                              for s in ligand_sites]
+                grover_ligand_size = len(ligand_hbs)
+                h_thr, hb_thr = compute_h_hb_thresholds(flat_chain, h_min, h_max, hb_min, hb_max)
+
+                print(f"  {len(ligand_hbs)} siti farmacoforo estratti dal ligando")
+                print(f"\n  Grover Search  (ligand_size = {grover_ligand_size})")
+                print(f"  h_thr: {h_thr:.3f}, hb_thr: {hb_thr:.3f}")
+
+                grover_candidates = search_docking_sites(
+                    flat_chain, ligand_hbs, grover_ligand_size, h_thr, hb_thr
+                )
+
+                if grover_candidates:
+                    print(f"\n  {'Shift':6s}  {'Sito':6s}  {'Prob.':8s}  {'Soglia':8s}  {'N':4s}  Residui")
+                    print(f"  {'-'*6}  {'-'*6}  {'-'*8}  {'-'*8}  {'-'*4}  {'-'*20}")
+                    for c in grover_candidates:
+                        print(f"  {c['shift_offset']:6d}  {c['window_start_index']:6d}  "
+                              f"{c['matching_probability']:.4f}   {c['threshold']:.4f}   "
+                              f"{c['n_unique_states']:4d}  {', '.join(c['residues'])}")
+                else:
+                    print("\n  Nessun sito candidato trovato per il ligando dato.")
+
+                if output_dir:
+                    gjson_path = os.path.join(output_dir, "grover_search.json")
+                    with open(gjson_path, "w") as f:
+                        json.dump({
+                            "ligand": ligand_rec.label,
+                            "ligand_hbs": ligand_hbs,
+                            "ligand_size": grover_ligand_size,
+                            "candidates": grover_candidates,
+                        }, f, indent=2)
+                    print(f"\n  Grover search JSON salvato in: {gjson_path}")
+
+    return flat_chain, per_residue, segments, grover_candidates
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -383,7 +471,27 @@ if __name__ == "__main__":
     parser.add_argument("--save-plot", default=None,
                         help="Salva il plot come PNG")
     parser.add_argument("--ligand-size", type=int, default=3,
-                        help="Dimensione del ligando in siti (default 3)")
+                        help="Dimensione (in siti) delle finestre scorrevoli del "
+                             "vecchio step classico di quantum encoding (Step 7). "
+                             "Non ha a che fare col ligando reale usato da Grover, "
+                             "che deriva la propria dimensione da --ligand-pdb.")
+    parser.add_argument("--ligand-pdb", default=None,
+                        help="File PDB contenente il ligando (HETATM), es. la "
+                             "struttura completa scaricata da PDB. Se fornito, "
+                             "esegue la ricerca quantistica (Grover) dei siti di "
+                             "aggancio candidati con il ligando reale estratto.")
+    parser.add_argument("--ligand-code", default=None,
+                        help="Codice a 3 lettere del ligando (es. MTX), per "
+                             "disambiguare quando --ligand-pdb contiene più "
+                             "gruppi HETATM non-acqua (es. ioni). Default: sceglie "
+                             "automaticamente il gruppo con più atomi pesanti.")
+    parser.add_argument("--ligand-max-sites", type=int, default=3,
+                        help="Numero massimo di siti farmacoforo del ligando "
+                             "usati da Grover (default 3, cioè fino a 6 qubit). "
+                             "Oltre ~5 siti (10+ qubit) la sintesi dell'oracolo/"
+                             "diffusione (UnitaryGate) di Qiskit diventa molto "
+                             "lenta (decine di secondi/minuti per shift) — "
+                             "alzare questo valore solo se disposti ad aspettare.")
 
     args = parser.parse_args()
 
@@ -394,5 +502,8 @@ if __name__ == "__main__":
         save_plot=args.save_plot,
         args_ligand_size=args.ligand_size,
         surface_filter=args.surface_filter,
-        sasa_threshold=args.sasa_threshold
+        sasa_threshold=args.sasa_threshold,
+        ligand_pdb=args.ligand_pdb,
+        ligand_code=args.ligand_code,
+        ligand_max_sites=args.ligand_max_sites
     )

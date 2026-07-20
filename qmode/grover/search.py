@@ -75,7 +75,12 @@ def run_grover_circuit(
 ) -> Dict[str, float]:
     """StatePreparation(|s⟩) -> Oracolo -> Grover -> misura (Fig. 4).
     Ritorna {bitstring: probabilità}; get_counts() è già coerente con int(bitstring, 2),
-    nessuna inversione di bit necessaria (verificato con uno stato di controllo noto)."""
+    nessuna inversione di bit necessaria (verificato con uno stato di controllo noto).
+
+    Nota di scalabilità: oracolo e diffusione sono matrici unitarie dense
+    portate su circuito con UnitaryGate; la sintesi di Qiskit per questo tipo
+    di matrice non scala bene oltre ~10 qubit (misurato: ~45s per singola
+    transpilazione a 12 qubit, ripetuta una volta per shift offset)."""
     qc = QuantumCircuit(n_qubits, n_qubits)
     qc.append(StatePreparation(s_vector), range(n_qubits))
     qc.append(UnitaryGate(oracle), range(n_qubits))

@@ -26,7 +26,8 @@ Typical downstream uses: docking-score prediction, pocket similarity search, and
    - **First encoding**: binarizes h/hb intensity into 2-bit qubit basis states for Grover search.
    - **Second encoding**: computes probability amplitudes `(a, b, c, d)` for amplitude-based distance calculations.
    (`quantum_encoding.py`, `qubit_chain.py`)
-8. **Grover search** — tiles the protein into non-overlapping ligand-sized windows for each shift offset, builds the protein superposition state over the unique first-encoding basis states, and runs the modified Grover oracle + diffusion operator on a Qiskit simulator to identify which windows match a target ligand's (h, hb) profile above the `1/N` threshold (`qmode/grover/`). Implemented and unit-tested, but **not yet wired into `run_pipeline.py`**: it still needs a real ligand extracted from a PDB (see Scientific Background) rather than hand-typed (h, hb) values, so it isn't exposed as a CLI option yet.
+8. **Ligand extraction** (optional, via `--ligand-pdb`) — reads the ligand's HETATM group from a PDB file (auto-picks the largest non-water, non-standard-amino-acid group, or a specific one via `--ligand-code`) and assigns its bond orders from the PDB Chemical Component Dictionary (`qmode/ligand_reader.py`), falling back to geometric bond-order perception (`rdDetermineBonds`) if the ligand has no CCD entry or the network is unavailable. The ligand then goes through the same feature-extraction/dedup/ordering steps as protein residues.
+9. **Grover search** (optional, via `--ligand-pdb`) — tiles the protein into non-overlapping ligand-sized windows for each shift offset, builds the protein superposition state over the unique first-encoding basis states, and runs the modified Grover oracle + diffusion operator on a Qiskit simulator to identify which windows match the extracted ligand's (h, hb) profile above the `1/N` threshold (`qmode/grover/`).
 
 ---
 
@@ -36,6 +37,7 @@ Typical downstream uses: docking-score prediction, pocket similarity search, and
 Q-MODE-project/
 ├── qmode/
 │   ├── pdb_reader.py           # PDB parsing → residues with real 3D coordinates
+│   ├── ligand_reader.py        # Ligand HETATM parsing → mol via PDB CCD template (or geometric fallback)
 │   ├── feature_extraction.py   # RDKit-based pharmacophore feature extraction + Crippen h
 │   ├── abraham_hbond.py        # Abraham hb intensity lookup by functional group
 │   ├── surface_filter.py       # SASA-based solvent-exposure filter
@@ -119,6 +121,11 @@ python scripts/run_pipeline.py --pdb data/raw/3PTB_pocket.pdb \
 ```
 
 ```bash
+# Run Grover search against a real ligand extracted from a full PDB structure
+python scripts/run_pipeline.py --pdb data/raw/4dfr_pocket.pdb --ligand-pdb data/raw/4DFR.pdb
+```
+
+```bash
 # Visualize a single residue: 3D structure + its 1D site chain
 python scripts/plot_residue_chain.py --pdb data/raw/3PTB_pocket.pdb --chain A --resseq 189
 ```
@@ -133,7 +140,10 @@ python scripts/plot_residue_chain.py --pdb data/raw/3PTB_pocket.pdb --chain A --
 | `--save-plot` | `None` | Save plots as PNG images |
 | `--no-surface-filter` | *(filter on by default)* | Disable the SASA solvent-exposure filter (keep buried sites too) |
 | `--sasa-threshold` | `1.0` | SASA threshold (Å²) for considering an atom solvent-exposed |
-| `--ligand-size` | `3` | Sliding-window size (in sites) used for quantum-chain segmentation |
+| `--ligand-size` | `3` | Sliding-window size (in sites) used for the classical quantum-chain segmentation (Step 7) — unrelated to the real ligand used by Grover |
+| `--ligand-pdb` | `None` | Path to a PDB file containing the ligand's HETATM records (e.g. the full structure downloaded from PDB). When set, runs Grover search with the extracted ligand |
+| `--ligand-code` | `None` | 3-letter ligand code to disambiguate when `--ligand-pdb` has multiple non-water HETATM groups. Default: auto-picks the group with the most heavy atoms |
+| `--ligand-max-sites` | `3` | Max number of ligand pharmacophore sites used by Grover (6 qubits). Raising this past ~5 sites (10+ qubits) makes oracle/diffusion synthesis very slow in Qiskit |
 
 ---
 
@@ -189,5 +199,9 @@ pytest tests/
 
 The quantum-encoding stage follows the two-step scheme from *"Quantum algorithm for protein-ligand docking sites identification in the interaction space"*: a **first encoding** that binarizes hydrophobicity/H-bond intensity into qubit basis states for Grover search, and a **second encoding** that computes probability amplitudes for amplitude-based Euclidean distance estimation. See `Report/Q-MODE_Report_EN.pdf` for the full derivation and results.
 
-The Grover search itself (`qmode/grover/`) is implemented and unit-tested: protein superposition state, oracle, and diffusion operator (Eqs. 5-8 of the paper), run per shift offset on a Qiskit simulator. It currently takes the ligand as hand-specified `(h, hb)` values (see `tests/test_grover_search.py`) rather than one extracted from a real ligand PDB, so it is not yet wired into `run_pipeline.py` as a CLI option. Also not yet implemented: the paper's subsequent SWAP-test-based evaluation/ranking of candidate docking sites by Euclidean distance to the ligand.
+The Grover search itself (`qmode/grover/`) is implemented and unit-tested: protein superposition state, oracle, and diffusion operator (Eqs. 5-8 of the paper), run per shift offset on a Qiskit simulator. It is wired into `run_pipeline.py` via `--ligand-pdb`, with the ligand's own (h, hb) profile extracted from a real PDB (`qmode/ligand_reader.py`) rather than hand-typed values.
+
+Two known limitations: the ligand's H-bond intensity has no Abraham data (the table is indexed by amino-acid residue/atom name), so it stays at the neutral default — same open question as the protein-side Abraham assumptions above. And Qiskit's `UnitaryGate` synthesis for the oracle/diffusion operators doesn't scale past ~10 qubits (tens of seconds to minutes per shift offset), which is why `--ligand-max-sites` defaults to 3 (6 qubits).
+
+Also not yet implemented: the paper's subsequent SWAP-test-based evaluation/ranking of candidate docking sites by Euclidean distance to the ligand.
 
