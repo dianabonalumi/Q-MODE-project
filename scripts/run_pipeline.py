@@ -29,7 +29,7 @@ from qmode.feature_extraction import extract_features
 from qmode.site_selection import topological_order
 from qmode.abraham_hbond import assign_abraham_hb_intensities
 from qmode.site_dedup_centroid import select_dedup_centroid
-from qmode.ligand_reader import load_ligand_from_pdb
+from qmode.ligand_reader import load_ligand_from_pdb, compute_all_ligand_centroids
 
 
 def process_residue(rec, surface_filter=True, sasa_threshold=1.0, sasa_map=None):
@@ -255,7 +255,7 @@ def run_pipeline(
     grover_candidates = None
     if ligand_pdb is not None:
         from qmode.qubit_chain import compute_h_hb_thresholds
-        from qmode.grover import search_docking_sites
+        from qmode.grover import search_docking_sites, evaluate_candidates
 
         print(f"\n{'-'*60}")
         print(f"  Estrazione ligando da: {os.path.basename(ligand_pdb)}")
@@ -284,12 +284,25 @@ def run_pipeline(
                 )
 
                 if grover_candidates:
-                    print(f"\n  {'Shift':6s}  {'Sito':6s}  {'Prob.':8s}  {'Soglia':8s}  {'N':4s}  Residui")
-                    print(f"  {'-'*6}  {'-'*6}  {'-'*8}  {'-'*8}  {'-'*4}  {'-'*20}")
+                    print(f"\n  {'Shift':6s}  {'Sito':6s}  {'Prob.':8s}  {'Soglia':8s}  {'Score':7s}  Residui")
+                    print(f"  {'-'*6}  {'-'*6}  {'-'*8}  {'-'*8}  {'-'*7}  {'-'*20}")
                     for c in grover_candidates:
                         print(f"  {c['shift_offset']:6d}  {c['window_start_index']:6d}  "
                               f"{c['matching_probability']:.4f}   {c['threshold']:.4f}   "
-                              f"{c['n_unique_states']:4d}  {', '.join(c['residues'])}")
+                              f"{c['interactivity_score']:7.3f}  {', '.join(c['residues'])}")
+
+                    ligand_centroids = compute_all_ligand_centroids(ligand_pdb, ligand_rec.res_name)
+                    grover_candidates = evaluate_candidates(
+                        grover_candidates, flat_chain, ligand_centroids, grover_ligand_size
+                    )
+                    n_copies = len(ligand_centroids)
+                    print(f"\n  Validazione: distanza dalla copia più vicina del ligando reale "
+                          f"({ligand_rec.res_name}, {n_copies} copia/e nella struttura)")
+                    print(f"  {'Sito':6s}  {'Dist. (Å)':10s}  Residui")
+                    print(f"  {'-'*6}  {'-'*10}  {'-'*20}")
+                    for c in grover_candidates:
+                        print(f"  {c['window_start_index']:6d}  {c['distance_to_ligand_A']:10.3f}  "
+                              f"{', '.join(c['residues'])}")
                 else:
                     print("\n  Nessun sito candidato trovato per il ligando dato.")
 

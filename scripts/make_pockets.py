@@ -21,6 +21,20 @@ TARGETS = [
     ("1STP", "BTN"),   # streptavidin + biotin (H-bond network)
 ]
 
+# Additional targets from the Astex Diverse Set (Hartshorn et al.), a curated
+# benchmark of clean single-ligand crystal complexes -- used here to broaden
+# the validation set for the Grover interactivity/distance ranking.
+ASTEX_TARGETS = [
+    ("1MMV", "3AR"), ("1L2S", "STC"), ("1N46", "PFA"), ("1Y6B", "AAX"),
+    ("1YWR", "LI9"), ("1YV3", "BIT"), ("1R9O", "FLP"), ("1IG3", "VIB"),
+    ("1R58", "AO5"), ("1YGC", "905"), ("1GPK", "HUP"), ("1HNN", "SKF"),
+    ("1K3U", "IAD"), ("1Q1G", "MTI"), ("1GM8", "SOX"), ("1OPK", "P16"),
+    ("1U1C", "BAU"), ("1T46", "STI"), ("1HQ2", "PH2"), ("1N2V", "BDI"),
+    ("1S19", "MC9"), ("1OYT", "FSN"), ("1XM6", "5RM"), ("1TZ8", "DES"),
+    ("2BSM", "BSM"),
+]
+TARGETS += ASTEX_TARGETS
+
 # hetero groups that are never real ligands (solvent, ions, common cryoprotectants)
 NON_LIGAND = {
     "HOH", "WAT", "TIP3", "DOD",

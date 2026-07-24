@@ -18,6 +18,7 @@ import urllib.request
 import urllib.error
 import warnings
 
+import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
@@ -65,14 +66,24 @@ class LigandRecord:
         return f"{self.chain_id}{self.res_seq}_{self.res_name}"
 
 
-def load_ligand_from_pdb(
+def compute_ligand_centroid(rec: LigandRecord) -> np.ndarray:
+    """Mean position of the ligand's heavy atoms — the ground-truth
+    reference point for validating candidate docking windows against."""
+    heavy_coords = [[a["x"], a["y"], a["z"]] for a in rec.atoms if not _is_hydrogen(a)]
+    coords = heavy_coords or [[a["x"], a["y"], a["z"]] for a in rec.atoms]
+    return np.array(coords).mean(axis=0)
+
+
+def _group_hetatm_records(
     pdb_path: str,
     ligand_code: Optional[str] = None,
     min_heavy_atoms: int = 5,
-) -> Optional[LigandRecord]:
+) -> List[LigandRecord]:
     """Reads the PDB's HETATM lines (excludes water and the 20 standard
-    amino acids). Uses ligand_code if given; otherwise auto-picks the group
-    with the most heavy atoms (dropping single ions below min_heavy_atoms)."""
+    amino acids) and groups them into one LigandRecord per (chain, res_seq,
+    res_name) -- i.e. per physical copy. A ligand bound at several sites in
+    the same asymmetric unit (common for small/symmetric proteins) yields
+    several records here, not one."""
     groups: dict = {}
 
     with open(pdb_path) as f:
@@ -113,16 +124,42 @@ def load_ligand_from_pdb(
                 "name": atom_name, "x": x, "y": y, "z": z, "element": element
             })
 
-    candidates = [
+    return [
         rec for rec in groups.values()
         if sum(1 for a in rec.atoms if not _is_hydrogen(a)) >= min_heavy_atoms
     ]
+
+
+def load_ligand_from_pdb(
+    pdb_path: str,
+    ligand_code: Optional[str] = None,
+    min_heavy_atoms: int = 5,
+) -> Optional[LigandRecord]:
+    """Reads the PDB's HETATM lines. Uses ligand_code if given; otherwise
+    auto-picks the group with the most heavy atoms (dropping single ions
+    below min_heavy_atoms). If the ligand is bound at multiple sites, only
+    one copy is returned here -- use compute_all_ligand_centroids for
+    validation against every bound copy."""
+    candidates = _group_hetatm_records(pdb_path, ligand_code, min_heavy_atoms)
     if not candidates:
         return None
 
     best = max(candidates, key=lambda rec: sum(1 for a in rec.atoms if not _is_hydrogen(a)))
     best.mol = ligand_to_mol(best)
     return best
+
+
+def compute_all_ligand_centroids(
+    pdb_path: str,
+    ligand_code: str,
+    min_heavy_atoms: int = 5,
+) -> List[np.ndarray]:
+    """Heavy-atom centroid of every bound copy of ligand_code in the
+    structure -- for validating against the nearest copy when a ligand
+    occupies multiple sites in the same asymmetric unit, instead of
+    silently comparing against just one arbitrarily-picked copy."""
+    records = _group_hetatm_records(pdb_path, ligand_code, min_heavy_atoms)
+    return [compute_ligand_centroid(rec) for rec in records]
 
 
 def _ligand_atoms_to_pdb_block(rec: LigandRecord) -> str:

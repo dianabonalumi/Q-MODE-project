@@ -12,6 +12,13 @@ from qmode.quantum_encoding import first_encoding
 from qmode.qubit_chain import get_h_hb_intensities
 
 
+def window_interactivity(window: List[dict]) -> float:
+    """Aggregate interaction strength of a contiguous window: sum of each
+    site's active h/hb intensity. Used to pick the most interactive window
+    among several that collapse onto the same first-encoding bitstring."""
+    return sum(sum(get_h_hb_intensities(site)) for site in window)
+
+
 def tile_offset(
     flat_chain: List[dict],
     ligand_size: int,
@@ -21,9 +28,11 @@ def tile_offset(
 ) -> Tuple[List[str], Dict[str, int]]:
     """Non-overlapping windows of `ligand_size` sites starting at `offset`
     (Fig. 6-7). Returns the unique bitstrings and, for each, the index of
-    its latest occurrence."""
+    its most interactive occurrence (highest sum of h/hb intensity across
+    the window's sites) — not just whichever window was seen last."""
     n_sites = len(flat_chain)
-    latest_position: Dict[str, int] = {}
+    best_position: Dict[str, int] = {}
+    best_score: Dict[str, float] = {}
     order: List[str] = []
 
     start = offset
@@ -33,12 +42,17 @@ def tile_offset(
             first_encoding(*get_h_hb_intensities(site), h_thr, hb_thr)
             for site in window
         )
-        if bitstring not in latest_position:
+        score = window_interactivity(window)
+        if bitstring not in best_position:
             order.append(bitstring)
-        latest_position[bitstring] = start
+            best_position[bitstring] = start
+            best_score[bitstring] = score
+        elif score > best_score[bitstring]:
+            best_position[bitstring] = start
+            best_score[bitstring] = score
         start += ligand_size
 
-    return order, latest_position
+    return order, best_position
 
 
 def build_superposition(unique_bitstrings: List[str], n_qubits: int) -> np.ndarray:
@@ -105,7 +119,10 @@ def search_docking_sites(
     hb_thr: float,
     shots: int = 4096,
 ) -> List[dict]:
-    """Searches every shift offset; returns windows with probability >= the 1/N threshold."""
+    """Searches every shift offset; returns windows with probability >= the
+    1/N threshold, sorted by descending interactivity score (sum of h/hb
+    intensity across the window's sites) so the most interactive matching
+    window comes first."""
     if len(ligand_hbs) != ligand_size:
         raise ValueError(
             f"ligand_hbs deve avere {ligand_size} coppie (h, hb), trovate {len(ligand_hbs)}"
@@ -119,7 +136,7 @@ def search_docking_sites(
     candidates: List[dict] = []
 
     for offset in range(ligand_size):
-        unique_bitstrings, latest_position = tile_offset(
+        unique_bitstrings, best_position = tile_offset(
             flat_chain, ligand_size, offset, h_thr, hb_thr
         )
         if not unique_bitstrings:
@@ -135,13 +152,14 @@ def search_docking_sites(
         probabilities = run_grover_circuit(s_vector, oracle, diffusion, n_qubits, shots=shots)
         matching_probability = probabilities.get(ligand_bitstring, 0.0)
 
-        if matching_probability >= threshold and ligand_bitstring in latest_position:
-            window_start = latest_position[ligand_bitstring]
+        if matching_probability >= threshold and ligand_bitstring in best_position:
+            window_start = best_position[ligand_bitstring]
             window_sites = flat_chain[window_start:window_start + ligand_size]
             residues = list(dict.fromkeys(s["residue"] for s in window_sites))
             candidates.append({
                 "shift_offset": offset,
                 "window_start_index": window_start,
+                "interactivity_score": round(window_interactivity(window_sites), 3),
                 "residues": residues,
                 "ligand_bitstring": ligand_bitstring,
                 "matching_probability": matching_probability,
@@ -149,4 +167,5 @@ def search_docking_sites(
                 "n_unique_states": n,
             })
 
+    candidates.sort(key=lambda c: c["interactivity_score"], reverse=True)
     return candidates

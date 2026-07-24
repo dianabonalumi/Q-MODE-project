@@ -9,6 +9,7 @@ DIST_THRESHOLD = 1.5
 
 def select_dedup_centroid(features, mol, max_sites=12):
     distinct = _dedup_with_centroid(features)
+    distinct.sort(key=lambda f: f.intensity, reverse=True)
     return distinct[:max_sites]
 
 def _dedup_with_centroid(features):

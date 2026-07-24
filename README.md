@@ -27,7 +27,8 @@ Typical downstream uses: docking-score prediction, pocket similarity search, and
    - **Second encoding**: computes probability amplitudes `(a, b, c, d)` for amplitude-based distance calculations.
    (`quantum_encoding.py`, `qubit_chain.py`)
 8. **Ligand extraction** (optional, via `--ligand-pdb`) — reads the ligand's HETATM group from a PDB file (auto-picks the largest non-water, non-standard-amino-acid group, or a specific one via `--ligand-code`) and assigns its bond orders from the PDB Chemical Component Dictionary (`qmode/ligand_reader.py`), falling back to geometric bond-order perception (`rdDetermineBonds`) if the ligand has no CCD entry or the network is unavailable. The ligand then goes through the same feature-extraction/dedup/ordering steps as protein residues.
-9. **Grover search** (optional, via `--ligand-pdb`) — tiles the protein into non-overlapping ligand-sized windows for each shift offset, builds the protein superposition state over the unique first-encoding basis states, and runs the modified Grover oracle + diffusion operator on a Qiskit simulator to identify which windows match the extracted ligand's (h, hb) profile above the `1/N` threshold (`qmode/grover/`).
+9. **Grover search** (optional, via `--ligand-pdb`) — tiles the protein into non-overlapping ligand-sized windows for each shift offset, builds the protein superposition state over the unique first-encoding basis states, and runs the modified Grover oracle + diffusion operator on a Qiskit simulator to identify which windows match the extracted ligand's (h, hb) profile above the `1/N` threshold (`qmode/grover/search.py`). When several windows collapse onto the same first-encoding bitstring, the one with the highest aggregate h/hb intensity ("most interactive") is kept, and matching candidates are ranked by that same score.
+10. **Distance validation** (optional, requires `--ligand-pdb`) — a classical stand-in for the paper's SWAP-test-based ranking: each Grover candidate's site centroid is compared, by Euclidean distance, to the real ligand's heavy-atom centroid, giving a ground-truth accuracy check per candidate (`qmode/grover/evaluate.py`). Only meaningful in benchmark mode, where the true ligand pose is known.
 
 ---
 
@@ -47,7 +48,8 @@ Q-MODE-project/
 │   ├── qubit_chain.py          # Sliding-window segmentation + qubit chain assembly
 │   ├── grover/                 # Modified Grover search (oracle + diffusion + shift)
 │   │   ├── __init__.py         # Re-exports the public search API
-│   │   └── search.py           # tile_offset, oracle/diffusion, circuit execution, search_docking_sites
+│   │   ├── search.py           # tile_offset, oracle/diffusion, circuit execution, search_docking_sites
+│   │   └── evaluate.py         # Distance-to-ligand validation of candidate windows
 │   ├── lattice_fitting.py      # 3D → 2D projection (PCA) — utility, not used by the main pipeline
 │   ├── snapping.py             # 2D coords → integer lattice nodes — utility, not used by the main pipeline
 │   └── labeling.py             # One-hot pharmacophore labeling — utility, not used by the main pipeline
@@ -185,6 +187,30 @@ python scripts/plot_residue_chain.py --pdb data/raw/3PTB_pocket.pdb --chain A --
 }
 ```
 
+**`grover_search.json`** — Grover candidates, ranked by descending interactivity score, each with a distance-to-ligand validation:
+
+```json
+{
+  "ligand": "A1_BEN",
+  "ligand_hbs": [[0.55, 0.0], [0.0, 0.81], [0.42, 0.0]],
+  "ligand_size": 3,
+  "candidates": [
+    {
+      "shift_offset": 2,
+      "window_start_index": 44,
+      "interactivity_score": 1.8,
+      "residues": ["A215_TRP", "A216_GLY"],
+      "ligand_bitstring": "100000",
+      "matching_probability": 0.558,
+      "threshold": 0.0769,
+      "n_unique_states": 13,
+      "window_centroid": [2.313, 16.52, 14.168],
+      "distance_to_ligand_A": 5.327
+    }
+  ]
+}
+```
+
 ---
 
 ## Running Tests
@@ -203,5 +229,5 @@ The Grover search itself (`qmode/grover/`) is implemented and unit-tested: prote
 
 Two known limitations: the ligand's H-bond intensity has no Abraham data (the table is indexed by amino-acid residue/atom name), so it stays at the neutral default — same open question as the protein-side Abraham assumptions above. And Qiskit's `UnitaryGate` synthesis for the oracle/diffusion operators doesn't scale past ~10 qubits (tens of seconds to minutes per shift offset), which is why `--ligand-max-sites` defaults to 3 (6 qubits).
 
-Also not yet implemented: the paper's subsequent SWAP-test-based evaluation/ranking of candidate docking sites by Euclidean distance to the ligand.
+Not yet implemented: the paper's own SWAP-test-based (amplitude/quantum) ranking of candidate docking sites. `qmode/grover/evaluate.py` covers the same evaluation *goal* — ranking candidates by distance to the ligand — with a classical Euclidean distance between each candidate's site centroid and the ligand's real heavy-atom centroid, rather than a quantum SWAP test on the second encoding's amplitudes. It only applies in benchmark mode (`--ligand-pdb` with a known bound ligand), not prospective screening.
 
