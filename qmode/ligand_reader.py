@@ -1,13 +1,13 @@
 """
-Ligand Reader — da HETATM del PDB a molecola RDKit di un ligando generico.
-Stesso schema di residue_to_mol() in pdb_reader.py: atomi reali dal PDB +
-template noto per assegnare l'ordine dei legami. Il template qui viene dal
-PDB Chemical Component Dictionary (CCD) via l'API REST di RCSB, invece del
-dizionario fisso AMINO_SMILES usato per i 20 amminoacidi standard.
+Turns a PDB's HETATM records into an RDKit molecule for a generic ligand.
+Same scheme as residue_to_mol() in pdb_reader.py: real PDB atoms + a known
+template to assign bond orders, but the template comes from the PDB Chemical
+Component Dictionary (CCD) via the RCSB REST API instead of the fixed
+AMINO_SMILES dict used for the 20 standard amino acids.
 
-Se il codice del ligando non è nel CCD, o la rete non è disponibile, si
-ricade su una bond-order perception geometrica (rdDetermineBonds), che non
-richiede alcun template.
+Falls back to geometric bond-order perception (rdDetermineBonds) -- no
+template needed -- when the ligand code isn't in the CCD or the network is
+unavailable.
 """
 
 from __future__ import annotations
@@ -28,9 +28,9 @@ _CCD_CACHE: dict = {}
 
 
 def fetch_ccd_smiles(ligand_code: str, timeout: float = 5.0) -> Optional[str]:
-    """SMILES ideale del componente `ligand_code` dal PDB Chemical Component
-    Dictionary. None su qualunque errore (rete, codice sconosciuto, campo
-    mancante) — non solleva mai un'eccezione."""
+    """Ideal SMILES for `ligand_code` from the PDB Chemical Component
+    Dictionary. Returns None on any error (network, unknown code, missing
+    field) -- never raises."""
     if ligand_code in _CCD_CACHE:
         return _CCD_CACHE[ligand_code]
 
@@ -70,10 +70,9 @@ def load_ligand_from_pdb(
     ligand_code: Optional[str] = None,
     min_heavy_atoms: int = 5,
 ) -> Optional[LigandRecord]:
-    """Legge le righe HETATM del PDB (esclude acqua e i 20 amminoacidi
-    standard). Se ligand_code è dato, prende quel gruppo; altrimenti sceglie
-    automaticamente il gruppo con più atomi pesanti (scarta ioni singoli
-    sotto min_heavy_atoms)."""
+    """Reads the PDB's HETATM lines (excludes water and the 20 standard
+    amino acids). Uses ligand_code if given; otherwise auto-picks the group
+    with the most heavy atoms (dropping single ions below min_heavy_atoms)."""
     groups: dict = {}
 
     with open(pdb_path) as f:
@@ -143,10 +142,9 @@ def _ligand_atoms_to_pdb_block(rec: LigandRecord) -> str:
 
 
 def ligand_to_mol(rec: LigandRecord) -> Optional[object]:
-    """Costruisce la molecola RDKit del ligando dagli atomi reali del PDB.
-    Prova prima il template CCD (AssignBondOrdersFromTemplate, come per gli
-    amminoacidi); se non disponibile ricade sulla bond-order perception
-    geometrica (rdDetermineBonds)."""
+    """Builds the ligand's RDKit molecule from real PDB atoms. Tries the CCD
+    template first (AssignBondOrdersFromTemplate, as for amino acids); falls
+    back to geometric bond-order perception (rdDetermineBonds) if unavailable."""
     pdb_block = _ligand_atoms_to_pdb_block(rec)
     mol_from_pdb = Chem.MolFromPDBBlock(pdb_block, sanitize=False, removeHs=False)
     if mol_from_pdb is None:

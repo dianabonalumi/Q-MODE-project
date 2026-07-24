@@ -1,7 +1,4 @@
-"""
-Test della pipeline su amminoacidi standard.
-Eseguire con: pytest tests/
-"""
+"""Pipeline tests on standard amino acids. Run with: pytest tests/"""
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -16,15 +13,13 @@ from qmode.pdb_reader import mol_from_amino_acid
 from qmode.abraham_hbond import assign_abraham_hb_intensities
 
 def _embed(mol):
-    """AddHs + conformero 3D (ETKDG) — necessario per topological_order."""
+    """AddHs + 3D conformer (ETKDG) -- required by topological_order."""
     mol = Chem.AddHs(mol)
     params = AllChem.ETKDGv3()
     params.randomSeed = 42
     AllChem.EmbedMolecule(mol, params)
     return mol
 
-
-# ─── Feature extraction ───────────────────────────────────────────────────────
 
 def test_mol_from_smiles():
     mol = mol_from_smiles("CC(N)C(=O)O")
@@ -47,8 +42,6 @@ def test_features_have_3d_coords():
         assert f.coords.shape == (3,), f"coords shape attesa (3,), trovata {f.coords.shape}"
 
 
-# ─── Ordinamento topologico ────────────────────────────────────────────────────
-
 def test_topological_order_returns_all_sites():
     mol = _embed(mol_from_smiles("OC(=O)C(N)Cc1c[nH]c2ccccc12"))  # TRP
     features = extract_features(mol, embed_3d=True)
@@ -62,9 +55,8 @@ def test_topological_order_single_site():
     assert sites == features
 
 
-# ─── Pipeline end-to-end (amminoacido isolato, stessa metodologia di
-#     scripts/run_pipeline.py: estrazione + h/hb + ordinamento topologico) ────
-
+# end-to-end on a standalone amino acid, same steps as run_pipeline.py:
+# extraction + h/hb + topological ordering
 def _map_amino_acid(name):
     mol = mol_from_amino_acid(name)
     features = extract_features(mol, embed_3d=True)

@@ -1,6 +1,6 @@
 """
-Visualizzazione dei punti farmacofori prima e dopo il filtro SASA.
-Usa la proteina completa come contesto e mostra la superficie molecolare.
+Visualizes pharmacophore sites before and after the SASA filter, using the
+full protein as context with the molecular surface shown.
 """
 import argparse
 import numpy as np

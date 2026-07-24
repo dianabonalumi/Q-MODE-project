@@ -5,10 +5,10 @@ import qmode.ligand_reader as ligand_reader
 from qmode.ligand_reader import load_ligand_from_pdb, ligand_to_mol, LigandRecord
 
 
-# Blocco PDB sintetico: acqua (esclusa), un chelating ion CA (escluso, sotto
-# min_heavy_atoms), un amminoacido standard etichettato HETATM (escluso,
-# è già coperto da AMINO_SMILES) e un ligando a 6 atomi (BNZ, geometria
-# esagonale realistica) che deve risultare il gruppo scelto.
+# Synthetic PDB block: water (excluded), a chelating CA ion (excluded, below
+# min_heavy_atoms), a standard amino acid tagged as HETATM (excluded, already
+# covered by AMINO_SMILES), and a 6-atom ligand (BNZ, realistic hexagonal
+# geometry) that should be the chosen group.
 PDB_TEXT = """\
 HETATM    1  O   HOH A 900      10.000  10.000  10.000  1.00  0.00           O
 HETATM    2 CA    CA A 901      20.000  20.000  20.000  1.00  0.00          CA

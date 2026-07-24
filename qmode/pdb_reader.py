@@ -1,12 +1,9 @@
 """
-PDB Reader — da file PDB a residui per la pipeline
-====================================================
-Legge un file PDB (proteina intera o tasca) e restituisce
-i residui come oggetti RDKit Mol, pronti per feature_extraction.
+Reads a PDB file (full protein or pocket) and returns residues as RDKit Mol
+objects ready for feature_extraction.
 
-Funzioni principali:
-  - load_residues_from_pdb()  → lista di ResidueRecord
-  - residue_to_mol()          → RDKit Mol con coordinate 3D reali dal PDB
+  - load_residues_from_pdb()  -> list of ResidueRecord
+  - residue_to_mol()          -> RDKit Mol with real 3D coordinates from the PDB
 """
 
 from __future__ import annotations
@@ -42,9 +39,9 @@ AMINO_SMILES = {
     "VAL": "CC(C)C(N)C(=O)O",
     "HSD": "OC(=O)C(N)Cc1c[nH]cn1",
     "HSE": "OC(=O)C(N)Cc1cnc[nH]1",
-    # HSP/HIP: istidina doppiamente protonata (imidazolio, carica +1).
-    # Nota: "OC(=O)C(N)Cc1c[nH+]cn1" (usato in precedenza) non kekulizza —
-    # bug pre-esistente, MolFromSmiles ritornava None. Forma Kekulé esplicita:
+    # HSP/HIP: doubly protonated histidine (imidazolium, +1 charge).
+    # The previous "OC(=O)C(N)Cc1c[nH+]cn1" wouldn't kekulize (MolFromSmiles
+    # returned None) -- explicit Kekule form fixes it:
     "HSP": "OC(=O)C(N)CC1=C[NH+]=CN1",
     "HIE": "OC(=O)C(N)Cc1cnc[nH]1",
     "HID": "OC(=O)C(N)Cc1c[nH]cn1",
@@ -54,11 +51,10 @@ AMINO_SMILES = {
 
 BACKBONE_ATOMS = {"N", "CA", "C", "O", "OXT", "H", "HA", "HN1", "HN2", "HN3"}
 
-# Nomi PDB canonici per ciascun atomo pesante, nello stesso ordine in cui
-# compare nello SMILES di AMINO_SMILES (derivato per connettività, non a
-# occhio — verificato atomo per atomo con RDKit). Usati per costruire una
-# molecola "come da PDB" (nomi + PDBResidueInfo) anche senza un file PDB
-# reale, es. per la modalità "singolo amminoacido" di pipeline.py.
+# Canonical PDB atom names in the same order they appear in AMINO_SMILES
+# (derived from connectivity, not by eye -- verified atom-by-atom with
+# RDKit). Used to build a "PDB-like" molecule (names + PDBResidueInfo) even
+# without a real PDB file, e.g. for the standalone-amino-acid path.
 AMINO_ATOM_NAMES = {
     "ALA": ["CB", "CA", "N", "C", "O", "OXT"],
     "ARG": ["NH2", "CZ", "NH1", "NE", "CD", "CG", "CB", "CA", "N", "C", "O", "OXT"],
@@ -123,7 +119,7 @@ def load_residues_from_pdb(
             atom_name = line[12:16].strip()
             element   = line[76:78].strip() if len(line) > 76 else atom_name[0]
 
-            # altLoc: tieni solo la conformazione primaria (vuota o "A")
+            # altLoc: keep only the primary conformation (blank or "A")
             if alt_loc and alt_loc != "A":
                 continue
 
@@ -162,8 +158,8 @@ def load_residues_from_pdb(
     return records
 
 
-# Backbone dell'amminoacido libero H2N-CHR-C(=O)OH. NX3 (non NX3;H2) per
-# includere anche la Prolina (azoto secondario nell'anello).
+# Free amino acid backbone H2N-CHR-C(=O)OH. NX3 (not NX3;H2) to also match
+# proline (secondary ring nitrogen).
 _BACKBONE_FREE_ACID_SMARTS = Chem.MolFromSmarts("[NX3][CX4][CX3](=O)[OX2H1]")
 
 _FREE_TEMPLATE_CACHE: dict = {}
@@ -171,22 +167,22 @@ _INTERNAL_TEMPLATE_CACHE: dict = {}
 
 
 def _get_free_template(res_name: str):
-    """Mol dallo SMILES dell'amminoacido libero (con carbossile -COOH intero)."""
+    """Mol from the free amino acid's SMILES (full -COOH carboxyl)."""
     if res_name not in _FREE_TEMPLATE_CACHE:
         _FREE_TEMPLATE_CACHE[res_name] = Chem.MolFromSmiles(AMINO_SMILES[res_name])
     return _FREE_TEMPLATE_CACHE[res_name]
 
 
 def _get_internal_template(res_name: str):
-    """Template per un residuo interno alla catena: SMILES libero meno
-    l'ossidrile terminale del carbossile di backbone."""
+    """Template for a chain-internal residue: the free SMILES minus the
+    backbone carboxyl's terminal hydroxyl."""
     if res_name not in _INTERNAL_TEMPLATE_CACHE:
         free = _get_free_template(res_name)
         match = free.GetSubstructMatch(_BACKBONE_FREE_ACID_SMARTS)
         if not match:
             _INTERNAL_TEMPLATE_CACHE[res_name] = free
         else:
-            oh_idx = match[-1]  # ultimo atomo del pattern = -OH terminale
+            oh_idx = match[-1]  # last atom of the pattern = terminal -OH
             rw = Chem.RWMol(free)
             rw.RemoveAtom(oh_idx)
             m = rw.GetMol()
@@ -203,9 +199,9 @@ def _is_hydrogen(atom_dict: dict) -> bool:
 
 
 def _atoms_to_pdb_block(rec: "ResidueRecord") -> str:
-    """Righe ATOM con gli atomi pesanti reali del residuo (nomi/coordinate
-    originali). Gli idrogeni, se presenti, vengono esclusi qui e rigenerati
-    dopo con AddHs(addCoords=True)."""
+    """ATOM lines for the residue's real heavy atoms (original names/
+    coordinates). Any hydrogens present are excluded here and regenerated
+    later with AddHs(addCoords=True)."""
     lines = []
     i = 0
     for a in rec.atoms:
@@ -222,9 +218,9 @@ def _atoms_to_pdb_block(rec: "ResidueRecord") -> str:
 
 
 def residue_to_mol(rec: ResidueRecord) -> Optional[object]:
-    """Costruisce la molecola RDKit direttamente dagli atomi reali del PDB
-    (coordinate/nomi corretti per costruzione); ordine dei legami e
-    aromaticità assegnati per confronto con un template noto."""
+    """Builds the RDKit molecule directly from real PDB atoms (coordinates/
+    names correct by construction); bond order and aromaticity assigned by
+    comparison against a known template."""
     if rec.res_name not in AMINO_SMILES:
         warnings.warn(f"Residuo sconosciuto: {rec.res_name}")
         return None
@@ -248,20 +244,18 @@ def residue_to_mol(rec: ResidueRecord) -> Optional[object]:
         )
         return None
 
-    # idrogeni assenti nel PDB a raggi X, stimati dalla geometria reale
+    # hydrogens missing from the X-ray PDB, estimated from the real geometry
     mol = Chem.AddHs(mol, addCoords=True)
 
     return mol
 
 
 def mol_from_amino_acid(res_name: str, chain_id: str = "A", res_seq: int = 1):
-    """
-    Costruisce la molecola RDKit di un amminoacido isolato (nessun PDB
-    reale): SMILES libero embeddato in 3D (ETKDG) + nomi PDB canonici
-    (AMINO_ATOM_NAMES) attaccati via PDBResidueInfo. Permette a
-    topological_order() e assign_abraham_hb_intensities() di funzionare
-    identicamente al caso "da PDB reale", senza coordinate cristallografiche.
-    """
+    """Builds the RDKit molecule for a standalone amino acid (no real PDB):
+    free SMILES embedded in 3D (ETKDG) + canonical PDB names
+    (AMINO_ATOM_NAMES) attached via PDBResidueInfo. Lets topological_order()
+    and assign_abraham_hb_intensities() work the same as with a real PDB,
+    without crystallographic coordinates."""
     if res_name not in AMINO_SMILES:
         warnings.warn(f"Residuo sconosciuto: {res_name}")
         return None

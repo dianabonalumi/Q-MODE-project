@@ -1,14 +1,18 @@
 """
-Intensità di legame idrogeno (hb) — scale di Abraham.
-Sostituisce il calcolo geometrico di hbond_geometry.py con valori
-INTRINSECI (alpha2H donatore, beta2H accettore), proprietà del sito e non
-della coppia sito-partner. Valori verificati su UFZ-LSER Database
-(https://www.ufz.de/lserd), non trascritti da Abraham & Platts (2001).
+H-bond intensity (hb) from Abraham LSER scales, intrinsic to each site
+(alpha2H donor, beta2H acceptor) rather than to a site-partner pair.
+Values verified against the UFZ-LSER Database (https://www.ufz.de/lserd),
+not transcribed from Abraham & Platts (2001).
 
-Gruppi ionizzati (carbossilato Asp/Glu, ammonio Lys, guanidinio Arg): la
-scala di Abraham copre solo soluti neutri, quindi si usa come proxy
-l'analogo neutro più vicino (sottostima la forza reale) — segnalato in
-ogni voce interessata.
+Ionized groups (Asp/Glu carboxylate, Lys ammonium, Arg guanidinium): Abraham
+only covers neutral solutes, so we proxy with the nearest neutral analog
+(underestimates the real strength) -- flagged on each affected entry.
+
+Ligands: the table is keyed by (res_name, pdb_atom_name), which a ligand
+never matches. _heuristic_group_key() covers that case by classifying the
+atom's local environment (symbol/valence/neighbors), limited to carboxyl,
+amine, phenol and thiol -- cheaper than a general SMARTS matcher but misses
+anything else, which stays at the neutral default.
 """
 
 from __future__ import annotations
@@ -22,30 +26,30 @@ from .feature_extraction import AtomFeature
 
 @dataclass(frozen=True)
 class AbrahamGroup:
-    alpha2H: Optional[float]   # forza come donatore; None se il ruolo non si applica
-    beta2H: Optional[float]    # forza come accettore; None se il ruolo non si applica
+    alpha2H: Optional[float]   # donor strength; None if the role doesn't apply
+    beta2H: Optional[float]    # acceptor strength; None if the role doesn't apply
     model_compound: str
     reference: str
     note: str = ""
 
 
-# Chiave: (res_name, nome_atomo_PDB). "*" come res_name copre il backbone,
-# comune a tutti gli amminoacidi standard.
+# Key: (res_name, pdb_atom_name). "*" as res_name covers backbone atoms,
+# shared by all standard amino acids.
 ABRAHAM_TABLE: Dict[Tuple[str, str], AbrahamGroup] = {
 
-    # ── Backbone (tutti gli amminoacidi) ──────────────────────────────
+    # Backbone (all amino acids)
     ("*", "N"): AbrahamGroup(
         alpha2H=0.40, beta2H=None,
-        model_compound="N-metilacetamide", reference="Abraham (1994)"),
+        model_compound="N-methylacetamide", reference="Abraham (1994)"),
     ("*", "O"): AbrahamGroup(
         alpha2H=None, beta2H=0.72,
-        model_compound="N-metilacetamide", reference="Abraham (1994)"),
+        model_compound="N-methylacetamide", reference="Abraham (1994)"),
     ("*", "OXT"): AbrahamGroup(
         alpha2H=0.62, beta2H=None,
-        model_compound="acido acetico (carbossile C-terminale libero)",
+        model_compound="acetic acid (free C-terminal carboxyl)",
         reference="Abraham (2003/2005/2006/2007/2010/2012)"),
 
-    # ── Asn / Gln: ammide primaria laterale ────────────────────────────
+    # Asn / Gln: primary amide side chain
     ("ASN", "ND2"): AbrahamGroup(
         alpha2H=0.55, beta2H=None,
         model_compound="acetamide", reference="Abraham (2010/2012)"),
@@ -59,99 +63,98 @@ ABRAHAM_TABLE: Dict[Tuple[str, str], AbrahamGroup] = {
         alpha2H=None, beta2H=0.69,
         model_compound="acetamide", reference="Abraham (2010/2012)"),
 
-    # ── Asp / Glu: carbossilato (SEMPRE accettore) ─────────────────────
+    # Asp / Glu: carboxylate (acceptor only)
     ("ASP", "OD1"): AbrahamGroup(
         alpha2H=None, beta2H=0.44,
-        model_compound="acido acetico (proxy neutro di -COO-)",
+        model_compound="acetic acid (neutral proxy for -COO-)",
         reference="Abraham (2003/2005/2006/2007/2010/2012)",
-        note="PROXY: carbonile neutro, non l'anione carbossilato reale"),
+        note="PROXY: neutral carbonyl, not the real carboxylate anion"),
     ("ASP", "OD2"): AbrahamGroup(
         alpha2H=None, beta2H=0.44,
-        model_compound="acido acetico (proxy neutro di -COO-)",
+        model_compound="acetic acid (neutral proxy for -COO-)",
         reference="Abraham (2003/2005/2006/2007/2010/2012)",
-        note="PROXY: carbonile neutro, non l'anione carbossilato reale"),
+        note="PROXY: neutral carbonyl, not the real carboxylate anion"),
     ("GLU", "OE1"): AbrahamGroup(
         alpha2H=None, beta2H=0.44,
-        model_compound="acido acetico (proxy neutro di -COO-)",
+        model_compound="acetic acid (neutral proxy for -COO-)",
         reference="Abraham (2003/2005/2006/2007/2010/2012)",
-        note="PROXY: carbonile neutro, non l'anione carbossilato reale"),
+        note="PROXY: neutral carbonyl, not the real carboxylate anion"),
     ("GLU", "OE2"): AbrahamGroup(
         alpha2H=None, beta2H=0.44,
-        model_compound="acido acetico (proxy neutro di -COO-)",
+        model_compound="acetic acid (neutral proxy for -COO-)",
         reference="Abraham (2003/2005/2006/2007/2010/2012)",
-        note="PROXY: carbonile neutro, non l'anione carbossilato reale"),
+        note="PROXY: neutral carbonyl, not the real carboxylate anion"),
 
-    # ── Lys: ammonio (SEMPRE donatore) ─────────────────────────────────
+    # Lys: ammonium (donor only)
     ("LYS", "NZ"): AbrahamGroup(
         alpha2H=0.16, beta2H=None,
-        model_compound="propilammina (proxy neutro di -NH3+)",
+        model_compound="propylamine (neutral proxy for -NH3+)",
         reference="Abraham (1994/2007/2009/2010)",
-        note="PROXY: ammina neutra, non il catione ammonio reale"),
+        note="PROXY: neutral amine, not the real ammonium cation"),
 
-    # ── Arg: guanidinio (SEMPRE donatore) ──────────────────────────────
-    # Nessun dato Abraham per guanidina/guanidinio (verificato sulla
-    # UFZ-LSER Database: nessuna voce); si riusa il proxy amminico.
+    # Arg: guanidinium (donor only) -- no Abraham data for guanidine/guanidinium
+    # (checked against UFZ-LSER: no entry), reuses the amine proxy.
     ("ARG", "NE"): AbrahamGroup(
         alpha2H=0.16, beta2H=None,
-        model_compound="propilammina (proxy, nessun dato per guanidinio)",
+        model_compound="propylamine (proxy, no guanidinium data)",
         reference="Abraham (1994/2007/2009/2010)",
-        note="PROXY: nessun valore Abraham diretto per il guanidinio"),
+        note="PROXY: no direct Abraham value for guanidinium"),
     ("ARG", "NH1"): AbrahamGroup(
         alpha2H=0.16, beta2H=None,
-        model_compound="propilammina (proxy, nessun dato per guanidinio)",
+        model_compound="propylamine (proxy, no guanidinium data)",
         reference="Abraham (1994/2007/2009/2010)",
-        note="PROXY: nessun valore Abraham diretto per il guanidinio"),
+        note="PROXY: no direct Abraham value for guanidinium"),
     ("ARG", "NH2"): AbrahamGroup(
         alpha2H=0.16, beta2H=None,
-        model_compound="propilammina (proxy, nessun dato per guanidinio)",
+        model_compound="propylamine (proxy, no guanidinium data)",
         reference="Abraham (1994/2007/2009/2010)",
-        note="PROXY: nessun valore Abraham diretto per il guanidinio"),
+        note="PROXY: no direct Abraham value for guanidinium"),
 
-    # ── Ser / Thr: ossidrile alifatico (entrambi i ruoli) ──────────────
+    # Ser / Thr: aliphatic hydroxyl (both roles)
     ("SER", "OG"): AbrahamGroup(
         alpha2H=0.37, beta2H=0.48,
-        model_compound="1-propanolo", reference="Abraham (1994/2006/2012)"),
+        model_compound="1-propanol", reference="Abraham (1994/2006/2012)"),
     ("THR", "OG1"): AbrahamGroup(
         alpha2H=0.37, beta2H=0.48,
-        model_compound="1-propanolo", reference="Abraham (1994/2006/2012)"),
+        model_compound="1-propanol", reference="Abraham (1994/2006/2012)"),
 
-    # ── Tyr: ossidrile fenolico (entrambi i ruoli) ─────────────────────
+    # Tyr: phenolic hydroxyl (both roles)
     ("TYR", "OH"): AbrahamGroup(
         alpha2H=0.60, beta2H=0.30,
-        model_compound="fenolo", reference="Abraham (1994/2000/2004/2010)"),
+        model_compound="phenol", reference="Abraham (1994/2000/2004/2010)"),
 
-    # ── His: anello imidazolico (ambiguo, entrambi i ruoli) ────────────
+    # His: imidazole ring (ambiguous, both roles)
     ("HIS", "ND1"): AbrahamGroup(
         alpha2H=0.42, beta2H=0.78,
-        model_compound="imidazolo", reference="Abraham (1993/1994)",
-        note="Ambiguo (dipende dal tautomero): usato il valore della molecola intera"),
+        model_compound="imidazole", reference="Abraham (1993/1994)",
+        note="Ambiguous (tautomer-dependent): using the whole-molecule value"),
     ("HIS", "NE2"): AbrahamGroup(
         alpha2H=0.42, beta2H=0.78,
-        model_compound="imidazolo", reference="Abraham (1993/1994)",
-        note="Ambiguo (dipende dal tautomero): usato il valore della molecola intera"),
+        model_compound="imidazole", reference="Abraham (1993/1994)",
+        note="Ambiguous (tautomer-dependent): using the whole-molecule value"),
 
-    # ── Trp: N-H indolico (solo donatore: il lone pair è delocalizzato
-    #        nell'anello, non è un accettore reale) ─────────────────────
+    # Trp: indole N-H (donor only -- the lone pair is delocalized into the
+    # ring, so it isn't a real acceptor)
     ("TRP", "NE1"): AbrahamGroup(
         alpha2H=0.44, beta2H=None,
-        model_compound="indolo", reference="Abraham (1993/1994)"),
+        model_compound="indole", reference="Abraham (1993/1994)"),
 
-    # ── Cys: tiolo (entrambi i ruoli, molto deboli — non in Tabella A.3
-    #        della nota tecnica, aggiunto per completezza) ──────────────
+    # Cys: thiol (both roles, very weak -- not in the technical note's
+    # Table A.3, added for completeness)
     ("CYS", "SG"): AbrahamGroup(
         alpha2H=0.00, beta2H=0.12,
-        model_compound="metantiolo", reference="Abraham (2007)"),
+        model_compound="methanethiol", reference="Abraham (2007)"),
 }
 
-# Varianti di protonazione dell'istidina usate nei force field CHARMM/AMBER
-# (vedi pdb_reader.AMINO_SMILES): stesso anello imidazolico di HIS.
+# Histidine protonation variants used by CHARMM/AMBER force fields (see
+# pdb_reader.AMINO_SMILES): same imidazole ring as HIS.
 for _his_variant in ("HSD", "HSE", "HSP", "HIE", "HID", "HIP"):
     ABRAHAM_TABLE[(_his_variant, "ND1")] = ABRAHAM_TABLE[("HIS", "ND1")]
     ABRAHAM_TABLE[(_his_variant, "NE2")] = ABRAHAM_TABLE[("HIS", "NE2")]
 
 
-# Pos/NegIonizable contano come donatori/accettori H-bond a tutti gli
-# effetti (Lys/Arg protonati, Asp/Glu deprotonati).
+# Pos/NegIonizable count as H-bond donors/acceptors (protonated Lys/Arg,
+# deprotonated Asp/Glu).
 _ROLE_FOR_FEATURE_TYPE = {
     "HBondDonor": "alpha2H",
     "HBondAcceptor": "beta2H",
@@ -161,9 +164,9 @@ _ROLE_FOR_FEATURE_TYPE = {
 
 
 def _atom_names_for_feature(feat: AtomFeature, mol) -> List[str]:
-    """Nomi PDB reali degli atomi di una feature (via PDBResidueInfo).
-    Una feature può coprire più atomi (es. NegIonizable su -COO-: C+O+O);
-    si prova ciascun nome finché non se ne trova uno in tabella."""
+    """Real PDB atom names for a feature's atoms (via PDBResidueInfo).
+    A feature can span multiple atoms (e.g. NegIonizable on -COO-: C+O+O);
+    each name is tried until one is found in the table."""
     names = []
     for idx in feat.atom_indices:
         if idx >= mol.GetNumAtoms():
@@ -175,13 +178,51 @@ def _atom_names_for_feature(feat: AtomFeature, mol) -> List[str]:
 
 
 def _nearest_atom_name(coords: np.ndarray, atom_records: List[dict]) -> Optional[str]:
-    """Fallback: nome dell'atomo PDB più vicino alle coordinate di una
-    feature, per i casi in cui l'atomo non abbia un PDBResidueInfo."""
+    """Fallback: name of the closest PDB atom to a feature's coordinates,
+    for atoms without a PDBResidueInfo."""
     if not atom_records:
         return None
     positions = np.array([[a["x"], a["y"], a["z"]] for a in atom_records])
     dists = np.linalg.norm(positions - coords, axis=1)
     return atom_records[int(np.argmin(dists))]["name"].strip()
+
+
+def _heuristic_group_key(feat: AtomFeature, mol) -> Optional[Tuple[str, str]]:
+    """Fallback for sites whose (res_name, atom_name) isn't in ABRAHAM_TABLE
+    (typically ligand atoms, e.g. "BNZ"+"C1"): classify the atom's local
+    chemical group and reuse the closest protein proxy already in the table."""
+    for idx in feat.atom_indices:
+        if idx >= mol.GetNumAtoms():
+            continue
+        atom = mol.GetAtomWithIdx(idx)
+        symbol = atom.GetSymbol()
+        heavy_neighbors = [n for n in atom.GetNeighbors() if n.GetSymbol() != "H"]
+
+        if symbol == "O" and len(heavy_neighbors) == 1 and heavy_neighbors[0].GetSymbol() == "C":
+            carbon = heavy_neighbors[0]
+            if carbon.GetIsAromatic():
+                return ("TYR", "OH")  # phenolic hydroxyl
+            other_o = [n for n in carbon.GetNeighbors()
+                       if n.GetSymbol() == "O" and n.GetIdx() != idx]
+            if other_o:
+                return ("ASP", "OD1")  # carboxyl / carboxylate
+
+        elif symbol == "N" and not atom.GetIsAromatic() and len(heavy_neighbors) <= 3:
+            is_amide = any(
+                n.GetSymbol() == "C" and any(
+                    b.GetSymbol() == "O"
+                    and mol.GetBondBetweenAtoms(n.GetIdx(), b.GetIdx()).GetBondTypeAsDouble() == 2.0
+                    for b in n.GetNeighbors()
+                )
+                for n in heavy_neighbors
+            )
+            if not is_amide:
+                return ("LYS", "NZ")  # amine
+
+        elif symbol == "S" and len(heavy_neighbors) == 1 and heavy_neighbors[0].GetSymbol() == "C":
+            return ("CYS", "SG")  # thiol
+
+    return None
 
 
 def assign_abraham_hb_intensities(
@@ -190,10 +231,9 @@ def assign_abraham_hb_intensities(
     mol,
     atom_records: Optional[List[dict]] = None,
 ) -> List[AtomFeature]:
-    """Assegna l'intensità hb (alpha2H donatori/PosIonizable, beta2H
-    accettori/NegIonizable) leggendo il valore dalla tabella di Abraham.
-    Mutazione in-place; se il gruppo non è in tabella l'intensità resta
-    quella neutra di extract_features()."""
+    """Assign hb intensity (alpha2H for donors/PosIonizable, beta2H for
+    acceptors/NegIonizable) from the Abraham table. Mutates in place; sites
+    with no table match keep the neutral intensity from extract_features()."""
     for feat in features:
         role = _ROLE_FOR_FEATURE_TYPE.get(feat.feature_type)
         if role is None:
@@ -205,6 +245,7 @@ def assign_abraham_hb_intensities(
             if nearest:
                 candidate_names = [nearest]
 
+        matched = False
         for atom_name in candidate_names:
             group = ABRAHAM_TABLE.get((res_name, atom_name)) or ABRAHAM_TABLE.get(("*", atom_name))
             if group is None:
@@ -212,6 +253,15 @@ def assign_abraham_hb_intensities(
             value = getattr(group, role)
             if value is not None:
                 feat.intensity = value
+                matched = True
                 break
+
+        if not matched:
+            group_key = _heuristic_group_key(feat, mol)
+            group = ABRAHAM_TABLE.get(group_key) if group_key else None
+            if group is not None:
+                value = getattr(group, role)
+                if value is not None:
+                    feat.intensity = value
 
     return features

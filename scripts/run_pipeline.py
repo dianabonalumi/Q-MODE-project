@@ -1,9 +1,8 @@
 """
-Script principale: PDB tasca -> sequenza flat di siti di interazione
-====================================================================
-I residui vengono ordinati seguendo la sequenza di catena (chain_id, res_seq);
-dentro ciascun residuo i siti sono ordinati per topologia covalente.
-L'output è una sequenza flat: [(tipo, intensity, coords), ...] per tutti i siti.
+Main entry point: pocket PDB -> flat sequence of interaction sites.
+Residues are ordered by chain sequence (chain_id, res_seq); within each
+residue, sites are ordered by covalent topology. Output is a flat sequence:
+[(type, intensity, coords), ...] for every site.
 
 Uso:
     python scripts/run_pipeline.py --pdb data/raw/1a08_pocket.pdb --plot
@@ -18,7 +17,6 @@ import warnings
 
 import numpy as np
 
-# Assicurati che i moduli custom siano importabili
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from qmode.surface_filter import compute_atom_sasa, filter_surface_features_by_coords
@@ -34,29 +32,21 @@ from qmode.site_dedup_centroid import select_dedup_centroid
 from qmode.ligand_reader import load_ligand_from_pdb
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-
 def process_residue(rec, surface_filter=True, sasa_threshold=1.0, sasa_map=None):
-    """
-    Esegue la pipeline locale su un singolo residuo.
-    Restituisce la lista di AtomFeature (siti, coordinate 3D reali,
-    ordinati per topologia covalente), oppure None se il residuo non può
-    essere processato.
-    """
+    """Runs the local pipeline on a single residue. Returns the list of
+    AtomFeature (sites, real 3D coordinates, ordered by covalent topology),
+    or None if the residue can't be processed."""
     if rec.mol is None:
         return None
 
     try:
-        # Step 2: feature extraction (usa coord 3D reali dal PDB)
         features = extract_features(rec.mol, embed_3d=True)
         if not features:
             warnings.warn(f"  {rec.label}: nessuna feature estratta, skip")
             return None
 
-        # Intensità HB intrinseca (scale di Abraham)
         assign_abraham_hb_intensities(features, res_name=rec.res_name, mol=rec.mol, atom_records=rec.atoms)
 
-        # ── Filtro superficie (opzionale) ────────────────────────────────────
         if surface_filter and sasa_map is not None:
             features = filter_surface_features_by_coords(
                 features=features,
@@ -69,16 +59,12 @@ def process_residue(rec, surface_filter=True, sasa_threshold=1.0, sasa_map=None)
             if not features:
                 return None
 
-        # ── M3: deduplicazione con centroide locale ──────────────────────────
-        # Fonde i siti farmacofori vicini dello stesso tipo in un unico sito
-        # con coordinate = centroide del gruppo. I siti lontani dello stesso
-        # tipo vengono mantenuti con le loro coordinate originali.
+        # merges nearby same-type pharmacophore sites into one centroid site;
+        # sites of the same type that are far apart keep their own coordinates
         features = select_dedup_centroid(features, mol=rec.mol, max_sites=12)
         if not features:
             return None
-        # ────────────────────────────────────────────────────────────────────
 
-        # Step 3: tutti i siti, ordinati per topologia covalente (no K-Means)
         sites = topological_order(features, mol=rec.mol)
 
         return sites
@@ -89,11 +75,11 @@ def process_residue(rec, surface_filter=True, sasa_threshold=1.0, sasa_map=None)
 
 
 def process_ligand(ligand_rec, max_sites=6):
-    """Stessa pipeline locale di process_residue, applicata al ligando:
-    extract_features -> assign_abraham_hb_intensities (no-op per un ligando,
-    la tabella di Abraham è indicizzata per amminoacido) -> dedup centroide
-    -> ordinamento topologico. Nessun filtro SASA (non è una superficie
-    proteica). Ritorna la lista di AtomFeature ordinati, o None."""
+    """Same local pipeline as process_residue, applied to the ligand:
+    extract_features -> assign_abraham_hb_intensities (falls back to the
+    heuristic proxy, since the ligand has no amino-acid res_name) -> centroid
+    dedup -> topological ordering. No SASA filter (not a protein surface).
+    Returns the ordered AtomFeature list, or None."""
     if ligand_rec is None or ligand_rec.mol is None:
         return None
 
@@ -119,8 +105,6 @@ def process_ligand(ligand_rec, max_sites=6):
         return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-
 def run_pipeline(
     pdb_path,
     output_dir=None,
@@ -142,23 +126,20 @@ def run_pipeline(
     residues = load_residues_from_pdb(pdb_path, skip_water=True)
     print(f"      {len(residues)} residui trovati")
 
-    # ── Step 2: ordinamento per catena ────────────────────────────────────
     print("\n[2/4] Ordinamento per sequenza di catena (chain_id, res_seq)...")
     centroid = compute_pocket_centroid(residues)
     print(f"      Centroide tasca: ({centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}) Å")
     print(f"      Ordine: " + " -> ".join(r.label for r in residues[:5]) + " -> ...")
 
-    # ── Calcolo SASA (se richiesto) ───────────────────────────────────────
     sasa_map = None
     if surface_filter:
         print("\n[!] Calcolo mappa SASA per il filtro di superficie...")
         sasa_map = compute_atom_sasa(pdb_path)
 
-    # ── Step 3: pipeline locale per ogni residuo ──────────────────────────
     print(f"\n[3/4] Pipeline locale per ogni residuo (reticolo indipendente)...")
 
-    flat_chain = []          # sequenza flat finale: lista di dict
-    per_residue = []         # per visualizzazione e debug
+    flat_chain = []          # final flat sequence: list of dicts
+    per_residue = []         # for visualization and debugging
 
     for rec in residues:
         sites = process_residue(
@@ -186,7 +167,6 @@ def run_pipeline(
 
         per_residue.append({"record": rec, "sites": sites})
 
-    # ── Step 4: output ────────────────────────────────────────────────────
     print(f"\n[4/4] Sequenza flat finale")
     print(f"{'-'*60}")
     print(f"  Residui processati : {len(per_residue)}")
@@ -196,12 +176,10 @@ def run_pipeline(
     for idx, s in enumerate(flat_chain):
         print(f"  {idx+1:4d}  {s['residue']:20s}  {s['type']:15s}  {s['intensity']:.3f}")
 
-    # ── Salvataggio ───────────────────────────────────────────────────────
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
         import pandas as pd
 
-        # JSON
         result = {
             "pdb": os.path.basename(pdb_path),
             "pocket_centroid": centroid.tolist(),
@@ -221,11 +199,9 @@ def run_pipeline(
         df.to_csv(csv_path, index=True, index_label="site_idx")
         print(f"  CSV salvato in:  {csv_path}")
 
-    # ── Visualizzazione ───────────────────────────────────────────────────
     if plot or save_plot:
         _plot_sequence(per_residue, flat_chain, pdb_path, save_plot)
 
-    # ── Catena di qubit (Quantum Encoding) ────────────────────────────────
     from qmode.qubit_chain import build_qubit_chain, print_qubit_chain
     from qmode.qubit_chain import get_h_hb_intensities
 
@@ -276,7 +252,6 @@ def run_pipeline(
             json.dump(qubit_data, f, indent=2)
         print(f"\n  Quantum JSON salvato in: {qjson_path}")
 
-    # ── Grover search (ricerca quantistica vera e propria) ────────────────
     grover_candidates = None
     if ligand_pdb is not None:
         from qmode.qubit_chain import compute_h_hb_thresholds
@@ -331,10 +306,6 @@ def run_pipeline(
 
     return flat_chain, per_residue, segments, grover_candidates
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Visualizzazione
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     import matplotlib.pyplot as plt
@@ -440,8 +411,6 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     if not save_path:
         plt.show()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

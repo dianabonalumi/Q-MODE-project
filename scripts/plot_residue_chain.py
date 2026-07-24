@@ -1,7 +1,7 @@
 """
-Visualizza un amminoacido: struttura 3D con i siti farmacoforici
-superficiali, e la loro disposizione nella catena 1D (stesso ordinamento
-topologico di run_pipeline.py).
+Visualizes a single amino acid: 3D structure with its surface pharmacophore
+sites, plus their layout in the 1D chain (same topological ordering as
+run_pipeline.py).
 
 Uso:
     python scripts/plot_residue_chain.py --pdb data/raw/4dfr_pocket.pdb --chain A --resseq 30
@@ -43,8 +43,6 @@ ELEMENT_COLOR = {
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-
 def find_residue(residues, chain_id: str, res_seq: int):
     for rec in residues:
         if rec.chain_id == chain_id and rec.res_seq == res_seq:
@@ -53,8 +51,8 @@ def find_residue(residues, chain_id: str, res_seq: int):
 
 
 def get_ordered_sites(rec, surface_filter=False, sasa_map=None, sasa_threshold=1.0):
-    """Stesso Step 2+3 di run_pipeline.py: feature, intensità hb (Abraham),
-    filtro SASA opzionale, ordinamento topologico (no K-Means)."""
+    """Same steps as run_pipeline.py: feature extraction, Abraham hb
+    intensity, optional SASA filter, topological ordering."""
     features = extract_features(rec.mol, embed_3d=True)
     if not features:
         return []
@@ -74,12 +72,8 @@ def get_ordered_sites(rec, surface_filter=False, sasa_map=None, sasa_threshold=1
     return topological_order(features, mol=rec.mol)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Plotting
-# ─────────────────────────────────────────────────────────────────────────────
-
 def plot_molecule_3d(ax, mol):
-    """Disegna atomi pesanti + legami dal conformatore 3D reale (coordinate PDB)."""
+    """Draws heavy atoms + bonds from the real 3D conformer (PDB coordinates)."""
     from rdkit.Chem import RemoveHs
 
     mol_no_h = RemoveHs(mol)
@@ -100,8 +94,8 @@ def plot_molecule_3d(ax, mol):
 
 
 def plot_sites_3d(ax, sites):
-    """Sovrappone i siti farmacoforici (centroidi) e la linea che segue
-    l'ordine della catena 1D, proiettata nello spazio 3D reale."""
+    """Overlays pharmacophore sites (centroids) and the 1D chain order,
+    projected into real 3D space."""
     if not sites:
         return
 
@@ -121,8 +115,8 @@ def plot_sites_3d(ax, sites):
 
 
 def plot_1d_chain(ax, sites):
-    """Disposizione linearizzata: un sito per posizione, nell'ordine
-    topologico usato per costruire la flat chain."""
+    """Linearized layout: one site per position, in the topological order
+    used to build the flat chain."""
     n = len(sites)
     xs = np.arange(n)
 
@@ -145,8 +139,6 @@ def plot_1d_chain(ax, sites):
     ax.set_xlabel("Posizione nella catena 1D (ordine topologico)")
     ax.spines[["top", "right", "left"]].set_visible(False)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(

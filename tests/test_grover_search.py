@@ -11,8 +11,8 @@ def _site(residue, feature_type, intensity):
     return {"residue": residue, "type": feature_type, "intensity": intensity}
 
 
-# Un sito reale ha sempre un canale a zero (get_h_hb_intensities), quindi "11"
-# per sito non è raggiungibile dalla proteina — solo dal ligando.
+# A real site always has one channel at zero (get_h_hb_intensities), so a
+# per-site "11" is unreachable from the protein -- only from the ligand.
 FLAT_CHAIN = [
     _site("R1", "Hydrophobe", 2.0),    # "10"
     _site("R1", "HBondDonor", 2.0),    # "01"
@@ -33,14 +33,14 @@ def test_tile_offset_windows_and_bitstrings():
 
 
 def test_tile_offset_offset_one_drops_partial_windows():
-    # offset=1 su 8 siti, ligand_size=2 -> finestre [1-2],[3-4],[5-6]; sito 7 scartato (parziale)
+    # offset=1 over 8 sites, ligand_size=2 -> windows [1-2],[3-4],[5-6]; site 7 dropped (partial)
     unique, latest = tile_offset(FLAT_CHAIN, ligand_size=2, offset=1, h_thr=H_THR, hb_thr=HB_THR)
     assert len(unique) == 3
     assert 7 not in latest.values()
 
 
 def test_search_finds_exact_match():
-    # Il ligando corrisponde esattamente alla finestra [2-3] (bitstring "1010")
+    # ligand matches window [2-3] exactly (bitstring "1010")
     ligand_hbs = [(2.0, 0.0), (2.0, 0.0)]
     candidates = search_docking_sites(FLAT_CHAIN, ligand_hbs, ligand_size=2,
                                        h_thr=H_THR, hb_thr=HB_THR, shots=4096)
@@ -51,14 +51,13 @@ def test_search_finds_exact_match():
 
 
 def test_search_no_match_when_pattern_absent():
-    # "1111" non può comparire in nessuna finestra: i siti della proteina non
-    # producono mai il bit "11" per singolo sito (vedi commento sopra), quindi
-    # nessuna finestra a 2 siti può risultare "1111".
+    # "1111" can't appear in any window: protein sites never produce a "11"
+    # bit (see comment above), so no 2-site window can come out "1111".
     ligand_bitstring = "1111"
     assert ligand_bitstring not in tile_offset(FLAT_CHAIN, 2, 0, H_THR, HB_THR)[0]
     assert ligand_bitstring not in tile_offset(FLAT_CHAIN, 2, 1, H_THR, HB_THR)[0]
 
-    ligand_hbs = [(2.0, 2.0), (2.0, 2.0)]  # ogni sito -> "11" (solo il ligando può)
+    ligand_hbs = [(2.0, 2.0), (2.0, 2.0)]  # each site -> "11" (only the ligand can do that)
     candidates = search_docking_sites(FLAT_CHAIN, ligand_hbs, ligand_size=2,
                                        h_thr=H_THR, hb_thr=HB_THR, shots=4096)
     assert candidates == []

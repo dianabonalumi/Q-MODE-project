@@ -1,13 +1,9 @@
 """
-Step 2 — Feature Extraction
-============================
-Estrae feature farmacofore da un amminoacido usando RDKit:
-  - Farmacofori (MolChemicalFeatures): HBD, HBA, Hydrophobe, Aromatic, PosIonizable, NegIonizable
-  - H-bond donor / acceptor (Lipinski)
-    - Idrofobicità (LogP per atomo tramite Crippen contributions)
-    - Legami idrogeno (intensità calcolata in modo continuo, simulando un'energia)
-
-Ogni feature è associata alle coordinate 3D dell'atomo (o centroide del gruppo).
+Extracts pharmacophore features from a molecule using RDKit's chemical
+feature factory (HBD, HBA, Hydrophobe, Aromatic, PosIonizable, NegIonizable).
+Each feature carries the 3D coordinates of its atom (or group centroid).
+Hydrophobic intensity comes from per-atom Crippen LogP contributions; H-bond
+intensity is filled in later by abraham_hbond.assign_abraham_hb_intensities().
 """
 
 from __future__ import annotations
@@ -20,8 +16,8 @@ from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit.Chem import rdDepictor
 from rdkit.Chem.rdchem import Mol
 
-# Feature factory di RDKit (API moderna). La vecchia `MolChemicalFeatures`
-# non esiste più nelle versioni recenti di RDKit: usare `ChemicalFeatures`.
+# RDKit's modern feature factory API. The old `MolChemicalFeatures` is gone
+# in recent RDKit versions -- use `ChemicalFeatures` instead.
 try:
     from rdkit.Chem import ChemicalFeatures
     _HAS_FACTORY = True
@@ -52,9 +48,9 @@ FEATURE_INDEX = {ft: i for i, ft in enumerate(FEATURE_TYPES)}
 
 
 
-# Le famiglie di RDKit (BaseFeatures.fdef) usano nomi diversi dai nostri:
-# "Donor"/"Acceptor" invece di "HBondDonor"/"HBondAcceptor", e una famiglia
-# "LumpedHydrophobe" per gruppi idrofobici aggregati. Mappiamo sui nostri tipi.
+# RDKit's families (BaseFeatures.fdef) use different names than ours --
+# "Donor"/"Acceptor" instead of "HBondDonor"/"HBondAcceptor", plus a
+# "LumpedHydrophobe" family for aggregated hydrophobic groups. Map to ours.
 FAMILY_MAP = {
     "Donor": "HBondDonor",
     "Acceptor": "HBondAcceptor",
@@ -68,11 +64,11 @@ FAMILY_MAP = {
 
 @dataclass
 class AtomFeature:
-    """Rappresenta una feature farmacofora localizzata nello spazio 3D."""
-    feature_type: str          # es. "HBondDonor"
-    coords: np.ndarray         # coordinate 3D (x, y, z)
-    atom_indices: List[int]    # indici degli atomi che la costituiscono
-    intensity: float = 1.0    # es. LogP parziale per Hydrophobe
+    """A pharmacophore feature localized in 3D space."""
+    feature_type: str          # e.g. "HBondDonor"
+    coords: np.ndarray         # 3D coordinates (x, y, z)
+    atom_indices: List[int]    # indices of the atoms making up the feature
+    intensity: float = 1.0     # e.g. partial LogP for Hydrophobe
 
     def type_index(self) -> int:
         return FEATURE_INDEX.get(self.feature_type, -1)
@@ -82,37 +78,23 @@ class AtomFeature:
 # Funzione principale
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Le feature HBond escono con intensità neutra 1.0; il valore reale (scale
-# di Abraham) viene assegnato a valle da abraham_hbond.assign_abraham_hb_intensities().
+# HBond features start at neutral intensity 1.0; the real value (Abraham
+# scales) is filled in downstream by abraham_hbond.assign_abraham_hb_intensities().
 _HB_NEUTRAL_INTENSITY = 1.0
 
 def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
-    """
-    Dato un oggetto RDKit Mol (con o senza coordinate 3D), restituisce
-    la lista di AtomFeature estratte.
-
-    Parameters
-    ----------
-    mol : Mol
-        Molecola RDKit. Può essere ottenuta da SMILES o da file SDF/PDB.
-    embed_3d : bool
-        Se True e la molecola non ha già coordinate 3D, genera un conformero
-        con ETKDG. Necessario per coordinate spaziali accurate.
-
-    Returns
-    -------
-    List[AtomFeature]
-    """
+    """Extracts the list of AtomFeature from an RDKit Mol (with or without
+    3D coordinates). If embed_3d and the molecule has none yet, generates an
+    ETKDG conformer."""
     mol = Chem.AddHs(mol)
 
-    # ── Generazione coordinate 3D ──────────────────────────────────────────
     if embed_3d:
         if mol.GetNumConformers() == 0:
             params = AllChem.ETKDGv3()
             params.randomSeed = 42
             result = AllChem.EmbedMolecule(mol, params)
             if result == -1:
-                # fallback: coordinate 2D alzate a z=0
+                # fallback: 2D coordinates lifted to z=0
                 rdDepictor.Compute2DCoords(mol)
                 conf = mol.GetConformer()
                 positions = conf.GetPositions()
@@ -121,7 +103,7 @@ def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
         conf = mol.GetConformer()
         positions = conf.GetPositions()  # shape (N_atoms, 3)
     else:
-        # riusa il conformero esistente; 2D solo se manca del tutto
+        # reuse the existing conformer; fall back to 2D only if there's none at all
         if mol.GetNumConformers() == 0:
             rdDepictor.Compute2DCoords(mol)
         conf = mol.GetConformer()
@@ -129,10 +111,10 @@ def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
 
     features: List[AtomFeature] = []
 
-    # Contributi di Crippen al LogP, per atomo pesante (indici allineati a `mol`
-    # perché AddHs aggiunge gli H in coda, preservando gli indici degli atomi
-    # pesanti). Usati per assegnare un'INTENSITÀ idrofobica continua, non per
-    # creare nuove feature (evita di inondare la molecola di siti Hydrophobe).
+    # Crippen LogP contributions per heavy atom (indices line up with `mol`
+    # since AddHs appends Hs at the end). Used for a continuous hydrophobic
+    # intensity, not to create new features (avoids flooding the molecule
+    # with Hydrophobe sites).
     crippen_logp = {}
     try:
         mol_no_h = Chem.RemoveHs(mol)
@@ -146,7 +128,6 @@ def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
         s = sum(v for v in vals if v > 0)
         return s if s > 0 else 1.0
 
-    # ── Farmacofori via Feature Factory ───────────────────────────────────
     if _HAS_FACTORY:
         factory = ChemicalFeatures.BuildFeatureFactory(FDEF_PATH)
         rdkit_feats = factory.GetFeaturesForMol(mol)
@@ -158,9 +139,9 @@ def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
             centroid = positions[atom_ids].mean(axis=0)
 
             if fname in ("HBondDonor", "HBondAcceptor"):
-                intensity = _HB_NEUTRAL_INTENSITY   # forza geometrica assegnata a valle
+                intensity = _HB_NEUTRAL_INTENSITY   # real strength assigned downstream
             elif fname == "Hydrophobe":
-                intensity = _hydrophobic_intensity(atom_ids)  # LogP di Crippen
+                intensity = _hydrophobic_intensity(atom_ids)  # Crippen LogP
             else:
                 intensity = 1.0                      # Aromatic / Pos / Neg Ionizable
 
@@ -171,7 +152,7 @@ def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
                 intensity=intensity,
             ))
     else:
-        # ── Fallback senza factory: H-bond manuali + Crippen per atomo ─────
+        # fallback without the factory: manual H-bond detection + per-atom Crippen
         features.extend(_manual_hbond_features(mol, positions))
         for atom_idx, logp in crippen_logp.items():
             if logp > 0.1:
@@ -181,32 +162,24 @@ def extract_features(mol: Mol, embed_3d: bool = True) -> List[AtomFeature]:
     return features
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Fallback manuale H-bond
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _manual_hbond_features(mol: Mol, positions: np.ndarray) -> List[AtomFeature]:
-    """Estrazione manuale di H-bond donor/acceptor senza feature factory."""
+    """Manual H-bond donor/acceptor extraction, used when the feature factory is unavailable."""
     features = []
     for atom in mol.GetAtoms():
         idx = atom.GetIdx()
         symbol = atom.GetSymbol()
         coord = positions[idx]
 
-        # Donor: N o O con almeno un H
+        # donor: N or O with at least one H
         if symbol in ("N", "O") and atom.GetTotalNumHs() > 0:
             features.append(AtomFeature("HBondDonor", coord, [idx], intensity=_HB_NEUTRAL_INTENSITY))
 
-        # Acceptor: N o O con lone pair (approssimazione: tutti N e O)
+        # acceptor: N or O with a lone pair (approximation: all N and O)
         if symbol in ("N", "O", "F"):
             features.append(AtomFeature("HBondAcceptor", coord, [idx], intensity=_HB_NEUTRAL_INTENSITY))
 
     return features
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Utility: crea mol da SMILES
-# ─────────────────────────────────────────────────────────────────────────────
 
 def mol_from_smiles(smiles: str) -> Mol:
     mol = Chem.MolFromSmiles(smiles)

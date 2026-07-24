@@ -1,10 +1,7 @@
 """
-Estrazione di tasche di legame da strutture PDB reali
-=====================================================
-Scarica alcune strutture dal PDB e, per ciascuna, ritaglia la TASCA come
-l'insieme dei residui proteici con almeno un atomo entro CUTOFF Å da un atomo
-del ligando (HETATM non-solvente). Le tasche risultanti vengono salvate in
-data/raw/.
+Downloads a few real PDB structures and, for each, crops a binding pocket as
+the protein residues with at least one atom within CUTOFF A of a ligand
+(non-solvent HETATM) atom. Pockets are saved to data/raw/.
 
 Uso:
     python scripts/make_pockets.py
@@ -14,17 +11,17 @@ import os
 import sys
 import urllib.request
 
-CUTOFF = 5.0   # Å: distanza ligando–residuo per definire la tasca
+CUTOFF = 5.0   # A: ligand-residue distance defining the pocket
 
-# (PDB id, codice del ligando di interesse) — bersagli diversi tra loro
+# (PDB id, ligand code) -- deliberately varied targets
 TARGETS = [
-    ("3PTB", "BEN"),   # tripsina + benzamidina (sito carico/polare)
-    ("1HSG", "MK1"),   # HIV-1 protease + indinavir (sito idrofobico esteso)
-    ("4DFR", "MTX"),   # diidrofolato reduttasi + methotrexate (misto)
-    ("1STP", "BTN"),   # streptavidina + biotina (rete di legami H)
+    ("3PTB", "BEN"),   # trypsin + benzamidine (charged/polar site)
+    ("1HSG", "MK1"),   # HIV-1 protease + indinavir (extended hydrophobic site)
+    ("4DFR", "MTX"),   # dihydrofolate reductase + methotrexate (mixed)
+    ("1STP", "BTN"),   # streptavidin + biotin (H-bond network)
 ]
 
-# Eteroatomi da NON considerare ligandi (solvente, ioni, crioprotettori comuni)
+# hetero groups that are never real ligands (solvent, ions, common cryoprotectants)
 NON_LIGAND = {
     "HOH", "WAT", "TIP3", "DOD",
     "NA", "K", "CL", "MG", "CA", "ZN", "MN", "FE", "SO4", "PO4",
@@ -54,9 +51,9 @@ def parse_coord(line):
 
 
 def extract_pocket(pdb_path: str, ligand_code: str, out_path: str) -> int:
-    """Ritaglia i residui ATOM entro CUTOFF da un atomo del ligando dato."""
-    atom_lines = []          # tutte le righe ATOM (proteina)
-    ligand_atoms = []        # coordinate degli atomi del ligando scelto
+    """Crops ATOM residues within CUTOFF of the given ligand's atoms."""
+    atom_lines = []          # all protein ATOM lines
+    ligand_atoms = []        # coordinates of the chosen ligand's atoms
 
     with open(pdb_path) as f:
         for line in f:
@@ -74,7 +71,7 @@ def extract_pocket(pdb_path: str, ligand_code: str, out_path: str) -> int:
         print(f"  [!] ligando {ligand_code} non trovato in {os.path.basename(pdb_path)}")
         return 0
 
-    # residui (chain, seq) con un atomo entro CUTOFF dal ligando
+    # residues (chain, seq) with an atom within CUTOFF of the ligand
     cutoff_sq = CUTOFF ** 2
     pocket_keys = set()
     for line in atom_lines:
@@ -88,7 +85,7 @@ def extract_pocket(pdb_path: str, ligand_code: str, out_path: str) -> int:
                 pocket_keys.add(key)
                 break
 
-    # scrive tutte le righe ATOM dei residui selezionati
+    # write all ATOM lines for the selected residues
     n_atoms = 0
     with open(out_path, "w") as out:
         out.write(f"HEADER    POCKET OF {os.path.basename(pdb_path)} AROUND {ligand_code}\n")

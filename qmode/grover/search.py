@@ -1,4 +1,4 @@
-"""Grover search (Liliopoulos et al. 2025). SWAP-test evaluation/ranking non implementato."""
+"""Grover search (Liliopoulos et al. 2025). SWAP-test evaluation/ranking not implemented."""
 
 from __future__ import annotations
 from typing import Dict, List, Tuple
@@ -19,8 +19,9 @@ def tile_offset(
     h_thr: float,
     hb_thr: float,
 ) -> Tuple[List[str], Dict[str, int]]:
-    """Finestre non sovrapposte di `ligand_size` siti da `offset` (Fig. 6-7).
-    Ritorna i bitstring unici e, per ciascuno, l'indice della sua ultima occorrenza."""
+    """Non-overlapping windows of `ligand_size` sites starting at `offset`
+    (Fig. 6-7). Returns the unique bitstrings and, for each, the index of
+    its latest occurrence."""
     n_sites = len(flat_chain)
     latest_position: Dict[str, int] = {}
     order: List[str] = []
@@ -41,7 +42,7 @@ def tile_offset(
 
 
 def build_superposition(unique_bitstrings: List[str], n_qubits: int) -> np.ndarray:
-    """|s⟩ = 1/√N Σ|x⟩ (Eq. 5): ampiezza 1/√N sui bitstring unici, zero altrove."""
+    """|s⟩ = 1/√N Σ|x⟩ (Eq. 5): amplitude 1/√N on each unique bitstring, zero elsewhere."""
     dim = 2 ** n_qubits
     s = np.zeros(dim, dtype=complex)
     n = len(unique_bitstrings)
@@ -73,14 +74,15 @@ def run_grover_circuit(
     n_qubits: int,
     shots: int = 4096,
 ) -> Dict[str, float]:
-    """StatePreparation(|s⟩) -> Oracolo -> Grover -> misura (Fig. 4).
-    Ritorna {bitstring: probabilità}; get_counts() è già coerente con int(bitstring, 2),
-    nessuna inversione di bit necessaria (verificato con uno stato di controllo noto).
+    """StatePreparation(|s⟩) -> oracle -> Grover -> measure (Fig. 4).
+    Returns {bitstring: probability}; get_counts() already lines up with
+    int(bitstring, 2), no bit reversal needed (checked against a known
+    control state).
 
-    Nota di scalabilità: oracolo e diffusione sono matrici unitarie dense
-    portate su circuito con UnitaryGate; la sintesi di Qiskit per questo tipo
-    di matrice non scala bene oltre ~10 qubit (misurato: ~45s per singola
-    transpilazione a 12 qubit, ripetuta una volta per shift offset)."""
+    Scalability note: oracle and diffusion are dense unitary matrices
+    compiled to a circuit via UnitaryGate; Qiskit's synthesis for this kind
+    of matrix doesn't scale well past ~10 qubits (measured: ~45s per
+    transpile at 12 qubits, repeated once per shift offset)."""
     qc = QuantumCircuit(n_qubits, n_qubits)
     qc.append(StatePreparation(s_vector), range(n_qubits))
     qc.append(UnitaryGate(oracle), range(n_qubits))
@@ -103,7 +105,7 @@ def search_docking_sites(
     hb_thr: float,
     shots: int = 4096,
 ) -> List[dict]:
-    """Ricerca su ogni shift offset; ritorna le finestre con probabilità >= soglia 1/N."""
+    """Searches every shift offset; returns windows with probability >= the 1/N threshold."""
     if len(ligand_hbs) != ligand_size:
         raise ValueError(
             f"ligand_hbs deve avere {ligand_size} coppie (h, hb), trovate {len(ligand_hbs)}"

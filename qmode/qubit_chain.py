@@ -1,8 +1,6 @@
 """
-Qubit Chain (Quantum Encoding)
-==============================
-Suddivide la sequenza flat di siti in segmenti (sliding window) della stessa
-dimensione del ligando e applica il First e Second Encoding quantistico.
+Splits the flat site sequence into ligand-sized sliding-window segments and
+applies the first/second quantum encoding to each.
 """
 
 from __future__ import annotations
@@ -14,23 +12,20 @@ from qmode.quantum_encoding import first_encoding, second_encoding
 
 @dataclass
 class QubitSegment:
-    """Un segmento della proteina di dimensione pari al ligando."""
     segment_idx: int
     sites: List[dict]
-    first_encoding_state: str           # es. "100111"
-    second_encoding_amplitudes: List[Dict[str, float]] # lista di {a,b,c,d} per ogni sito
+    first_encoding_state: str           # e.g. "100111"
+    second_encoding_amplitudes: List[Dict[str, float]]  # {a,b,c,d} per site
 
 
 def get_h_hb_intensities(site: dict) -> tuple[float, float]:
-    """
-    Riduce un sito ai due canali di interazione (h, hb).
+    """Reduce a site to its two interaction channels.
 
-      h  (idrofobico/apolare) : Hydrophobe, Aromatic
-      hb (polare/carico)      : HBondDonor, HBondAcceptor, PosIonizable, NegIonizable
+      h  (hydrophobic/apolar): Hydrophobe, Aromatic
+      hb (polar/charged):      HBondDonor, HBondAcceptor, PosIonizable, NegIonizable
 
-    I gruppi ionizzabili NON vengono più scartati a (0,0): sono interazioni
-    polari forti e confluiscono nel canale hb con la loro intensità geometrica.
-    Così ogni sito contribuisce ad almeno un canale (niente bit morti).
+    Ionizable groups feed into hb with their geometric intensity rather than
+    being dropped to (0,0), so every site lands in at least one channel.
     """
     t = site["type"]
     intensity = site.get("intensity", 1.0)
@@ -45,11 +40,9 @@ def get_h_hb_intensities(site: dict) -> tuple[float, float]:
 
 def compute_h_hb_thresholds(flat_chain: List[dict], h_min: float = 0.0, h_max: float = 1.0,
                              hb_min: float = 0.0, hb_max: float = 1.0) -> tuple[float, float]:
-    """
-    Soglie di binarizzazione = mediana dei valori ATTIVI di ciascun canale.
-    La mediana separa i siti ~50/50 ed evita la catena dominata da zeri che
-    si avrebbe usando la media del range (vedi quantum_encoding.first_encoding).
-    """
+    """Binarization thresholds = median of each channel's active values.
+    The median splits sites ~50/50, avoiding the all-zero chain the range
+    mean would produce (see quantum_encoding.first_encoding)."""
     import statistics
 
     h_active = [get_h_hb_intensities(s)[0] for s in flat_chain if get_h_hb_intensities(s)[0] > 0]
@@ -67,10 +60,7 @@ def build_qubit_chain(
     hb_min: float,
     hb_max: float
 ) -> List[QubitSegment]:
-    """
-    Crea la catena di segmenti e codifica gli stati quantistici.
-    Implementa la logica di 'protein shift' (sliding window) del paper.
-    """
+    """Sliding-window segmentation ("protein shift" in the paper) + encoding."""
     segments = []
     n_sites = len(flat_chain)
 
@@ -88,21 +78,19 @@ def build_qubit_chain(
         for site in segment_sites:
             h, hb = get_h_hb_intensities(site)
 
-            # First encoding (Grover Search) - 2 qubit per sito
-            q_str = first_encoding(h, hb, h_thr, hb_thr)
+            q_str = first_encoding(h, hb, h_thr, hb_thr)   # 2 qubits per site
             first_enc_str += q_str
-            
-            # Second encoding (Euclidean distance) - 4 ampiezze per sito
-            amps = second_encoding(h, hb, h_min, h_max, hb_min, hb_max)
+
+            amps = second_encoding(h, hb, h_min, h_max, hb_min, hb_max)  # 4 amplitudes per site
             second_enc_amps.append(amps)
-            
+
         segments.append(QubitSegment(
             segment_idx=i,
             sites=segment_sites,
             first_encoding_state=first_enc_str,
             second_encoding_amplitudes=second_enc_amps
         ))
-        
+
     return segments
 
 
@@ -111,7 +99,7 @@ def print_qubit_chain(segments: List[QubitSegment]):
     if not segments:
         print("Nessun segmento trovato (ligand_size > siti totali?).")
         return
-        
+
     print(f"\n  {'Seg':5s}  {'First Encoding':20s}  Residui Inclusi")
     print(f"  {'─'*5}  {'─'*20}  {'─'*30}")
     for s in segments:
@@ -122,5 +110,5 @@ def print_qubit_chain(segments: List[QubitSegment]):
                 residues.append(res)
         res_str = ", ".join(residues)
         print(f"  {s.segment_idx:5d}  |{s.first_encoding_state}⟩{' '*max(0, 18-len(s.first_encoding_state))}  {res_str}")
-        
+
     print(f"\n  Totale segmenti (shift): {len(segments)}")
