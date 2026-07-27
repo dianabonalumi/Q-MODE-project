@@ -5,25 +5,43 @@ computed via BioPython's Shrake & Rupley implementation; an atom counts as
 exposed above the threshold, and a feature is kept if any of its atoms is.
 Default threshold 1.0 A^2 -- inclusive, but drops fully buried atoms
 (literature range: 1.0 A^2 conservative to 5.0 A^2 for significant exposure).
+
+IMPORTANT: SASA is computed on the protein-only structure (HETATM excluded).
+Computing SASA on a holo structure (with ligand) would incorrectly classify
+binding-site atoms as buried because the ligand blocks the probe.
 """
 
 from __future__ import annotations
 from typing import List, Dict
+import io
 import numpy as np
 
 from .feature_extraction import AtomFeature
 
 try:
-    from Bio.PDB import PDBParser, PDBIO
+    from Bio.PDB import PDBParser, PDBIO, Select
     from Bio.PDB.SASA import ShrakeRupley
     _HAS_BIOPYTHON = True
 except ImportError:
     _HAS_BIOPYTHON = False
 
 
+class _ProteinOnlySelect(Select):
+    """Keeps only standard amino acid residues (ATOM records).
+    Excludes HETATM: ligands, crystallographic waters, ions.
+    In BioPython, standard residues have residue id[0] == ' '.
+    """
+    def accept_residue(self, residue):
+        return residue.get_id()[0] == " "
+
+
 def compute_atom_sasa(pdb_path: str) -> Dict[tuple, float]:
-    """Per-atom SASA for the PDB structure (Shrake & Rupley, probe radius
-    1.4 A). Returns {(chain_id, res_seq, atom_name): sasa_value_angstrom2}."""
+    """Per-atom SASA for the protein-only structure (Shrake & Rupley,
+    probe radius 1.4 A). HETATM (ligands, waters, ions) are stripped
+    before computation to avoid the holo-structure bias: if the co-
+    crystallised ligand is present it occludes the binding site and
+    makes the pocket atoms appear buried.
+    Returns {(chain_id, res_seq, atom_name): sasa_value_angstrom2}."""
     if not _HAS_BIOPYTHON:
         raise ImportError(
             "BioPython non installato. Esegui: pip install biopython"
@@ -32,11 +50,19 @@ def compute_atom_sasa(pdb_path: str) -> Dict[tuple, float]:
     parser = PDBParser(QUIET=True)
     structure = parser.get_structure("protein", pdb_path)
 
+    # Strip HETATM: write protein-only to an in-memory buffer, then re-parse
+    out = io.StringIO()
+    io_obj = PDBIO()
+    io_obj.set_structure(structure)
+    io_obj.save(out, select=_ProteinOnlySelect())
+    out.seek(0)
+    clean_structure = parser.get_structure("protein_clean", out)
+
     sr = ShrakeRupley()
-    sr.compute(structure, level="A")   # level="A" -> per atom
+    sr.compute(clean_structure, level="A")   # level="A" -> per atom
 
     sasa_map = {}
-    for model in structure:
+    for model in clean_structure:
         for chain in model:
             for residue in chain:
                 res_seq = residue.get_id()[1]
