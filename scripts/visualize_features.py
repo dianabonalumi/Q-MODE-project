@@ -11,8 +11,8 @@ from qmode.feature_extraction import extract_features
 COLORS = {
     "HBondDonor":    "blue",
     "HBondAcceptor": "red",
-    "Hydrophobe":    "yellow",
-    "Aromatic":      "orange",
+    "Hydrophobe":    "orange",
+    "Aromatic":      "purple",
     "PosIonizable":  "cyan",
     "NegIonizable":  "magenta",
 }
@@ -59,7 +59,7 @@ def make_spheres_js(features, viewer_var):
     lines = []
     for feat in features:
         x, y, z = feat.coords
-        color = COLORS.get(feat.feature_type, "white")
+        color = COLORS.get(feat.feature_type, "gray")
         lines.append(
             f'{viewer_var}.addSphere({{center:{{x:{x:.2f},y:{y:.2f},z:{z:.2f}}},'
             f'radius:0.5,color:"{color}",opacity:0.9}});'
@@ -70,7 +70,7 @@ spheres_all      = make_spheres_js(all_features, "viewer1")
 spheres_filtered = make_spheres_js(filtered_features, "viewer2")
 
 legend_html = "".join([
-    f'<span style="color:{c};margin-right:12px;">&#9679; {t}</span>'
+    f'<span style="color:{c};margin-right:12px;font-weight:bold;">&#9679; {t}</span>'
     for t, c in COLORS.items()
 ])
 
@@ -81,15 +81,18 @@ html = f"""<!DOCTYPE html>
   <title>Pharmacophore Features</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.0.3/3Dmol-min.js"></script>
   <style>
-    body {{ font-family: Arial, sans-serif; background: #1a1a2e; color: white; margin: 0; padding: 10px; }}
-    h2 {{ text-align: center; margin-bottom: 4px; }}
-    .legend {{ text-align: center; padding: 6px; font-size: 13px; }}
+    body {{ font-family: Arial, sans-serif; background: #f5f5f5; color: #1a1a2e; margin: 0; padding: 10px; }}
+    h2 {{ text-align: center; margin-bottom: 4px; color: #1a1a2e; }}
+    .legend {{ text-align: center; padding: 8px; font-size: 13px; background: white;
+               border-radius: 6px; margin-bottom: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }}
     .container {{ display: flex; justify-content: space-around; gap: 10px; }}
     .panel {{ width: 49%; }}
-    h3 {{ text-align: center; margin: 6px 0; }}
-    .stats {{ text-align: center; font-size: 12px; color: #aaa; margin-bottom: 4px; }}
-    .viewer {{ width: 100%; height: 520px; position: relative; border: 1px solid #333; border-radius: 6px; }}
-    .controls {{ text-align: center; font-size: 11px; color: #666; margin-top: 4px; }}
+    h3 {{ text-align: center; margin: 6px 0; color: #1a1a2e; }}
+    .stats {{ text-align: center; font-size: 12px; color: #555; margin-bottom: 4px; }}
+    .viewer {{ width: 100%; height: 520px; position: relative;
+               border: 1px solid #ccc; border-radius: 6px;
+               box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
+    .controls {{ text-align: center; font-size: 11px; color: #888; margin-top: 4px; }}
   </style>
 </head>
 <body>
@@ -104,7 +107,7 @@ html = f"""<!DOCTYPE html>
     </div>
     <div class="panel">
       <h3>After SASA filter &mdash; {len(filtered_features)} features</h3>
-      <div class="stats">Surface-exposed only (SASA threshold = {args.sasa_threshold} A²)</div>
+      <div class="stats">Surface-exposed only (SASA threshold = {args.sasa_threshold} &#8491;&#178;)</div>
       <div id="viewer2" class="viewer"></div>
       <div class="controls">Scroll to zoom &middot; Click+drag to rotate &middot; Right-click+drag to translate</div>
     </div>
@@ -113,20 +116,20 @@ html = f"""<!DOCTYPE html>
     var proteinStr = {repr(protein_str)};
     var pocketStr  = {repr(pocket_str)};
 
-    var viewer1 = $3Dmol.createViewer("viewer1", {{backgroundColor:"#0d1117"}});
+    var viewer1 = $3Dmol.createViewer("viewer1", {{backgroundColor:"white"}});
     viewer1.addModel(proteinStr, "pdb");
-    viewer1.setStyle({{}}, {{surface:{{opacity:0.15, color:"#4a90d9"}}}});
+    viewer1.setStyle({{}}, {{surface:{{opacity:0.3, color:"#4a90d9"}}}});
     viewer1.addModel(pocketStr, "pdb");
-    viewer1.setStyle({{}}, {{cartoon:{{color:"#7ab8f5", opacity:0.6}}}});
+    viewer1.setStyle({{}}, {{cartoon:{{color:"#2c5f8a", opacity:0.7}}}});
     {spheres_all}
     viewer1.zoomTo();
     viewer1.render();
 
-    var viewer2 = $3Dmol.createViewer("viewer2", {{backgroundColor:"#0d1117"}});
+    var viewer2 = $3Dmol.createViewer("viewer2", {{backgroundColor:"white"}});
     viewer2.addModel(proteinStr, "pdb");
     viewer2.setStyle({{}}, {{surface:{{opacity:0.15, color:"#4a90d9"}}}});
     viewer2.addModel(pocketStr, "pdb");
-    viewer2.setStyle({{}}, {{cartoon:{{color:"#7ab8f5", opacity:0.6}}}});
+    viewer2.setStyle({{}}, {{cartoon:{{color:"#2c5f8a", opacity:0.7}}}});
     {spheres_filtered}
     viewer2.zoomTo();
     viewer2.render();
