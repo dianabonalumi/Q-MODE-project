@@ -231,3 +231,90 @@ Two known limitations: the ligand's H-bond intensity has no Abraham data (the ta
 
 Not yet implemented: the paper's own SWAP-test-based (amplitude/quantum) ranking of candidate docking sites. `qmode/grover/evaluate.py` covers the same evaluation *goal* — ranking candidates by distance to the ligand — with a classical Euclidean distance between each candidate's site centroid and the ligand's real heavy-atom centroid, rather than a quantum SWAP test on the second encoding's amplitudes. It only applies in benchmark mode (`--ligand-pdb` with a known bound ligand), not prospective screening.
 
+Not yet implemented, and **currently not worth implementing**: the paper's own SWAP-test-based ranking of candidate docking sites. A classical stand-in for it was measured on the benchmark set and carries no localization signal — see [Benchmark Results](#benchmark-results) below.
+
+
+
+---
+
+## Benchmark Results
+
+Measured 2026-08-23 on the 29 pockets in `data/raw/` that have a matching full
+structure (`1a08` and `1ddm` do not), after the feature-extraction fixes of the
+same date. Reproduce with:
+
+```bash
+python scripts/run_pipeline.py --pdb data/raw/<x>_pocket.pdb --ligand-pdb data/raw/<X>.pdb
+```
+
+### Headline: the search does not localize the binding site
+
+At the default `--ligand-max-sites 3`, 21 of 29 pockets produce candidates
+(2 fail because the ligand yields no pharmacophore sites — both are HEM — and 6
+because no window clears the `1/N` probability threshold). Median distance from
+the top-ranked candidate's window centroid to the true ligand centroid is
+**8.22 Å**; only 3 of 21 land within 5 Å.
+
+Absolute distances depend on pocket size, so the meaningful measure is where a
+candidate falls in the distribution of *all* possible windows of that pocket
+(0% = closest window in the protein, 50% = indistinguishable from chance):
+
+| | mean percentile | median | random baseline |
+|---|---|---|---|
+| Top-1 by `interactivity_score` | 38.9% | 39.0% | 50.0% |
+| Best of the candidates returned | 29.3% | 23.6% | 32.1% |
+
+The random baseline for "best of *n* candidates" is `E[min] = 1/(n+1)` over the
+observed candidate counts (mean 2.33 per pocket). **Grover's candidate set is
+not better than picking the same number of windows at random.**
+
+### The bottleneck is the descriptor, not the ranking
+
+Ranking criteria and window size were both tested and neither is the limiting
+factor. Because Grover searches for an exact bitstring, the set of windows
+matching the ligand is determined classically, so its quality can be measured
+directly:
+
+| `--ligand-max-sites` | pockets with a match | median percentile of the matching set | best of the set | random baseline |
+|---|---|---|---|---|
+| 3 | 21/29 | 49.8% | 21.0% | 18.4% |
+| 4 | 11/29 | 45.2% | 20.0% | 21.5% |
+| 5 | 6/29 | 30.1% | 21.5% | 38.2% |
+
+At the default `k=3` the matching set sits at the 49.8th percentile — exactly
+chance — so no ranking criterion can help: there is nothing to rank. Larger `k`
+does buy real signal (at `k=5`, 21.5% measured against 38.2% expected by chance)
+but coverage collapses to 6 pockets, because the bitstring has `4^k` possible
+values and an exact match becomes vanishingly rare.
+
+Replacing the exact bitstring match with a distance on the second encoding's
+amplitudes restores coverage (27/29 pockets at `k=5`) but not accuracy: top-1 by
+Euclidean amplitude distance lands at the 45.8th percentile, by fidelity
+(the classical analogue of the SWAP test) at 45.0th.
+
+The reason shows up in the Spearman correlation between amplitude-space
+similarity to the ligand and true 3D distance to it, over every window of every
+pocket:
+
+```
+rho mean +0.007   median +0.063   |rho| > 0.3 in 2/27   correct sign in 14/27
+```
+
+Zero. A window's `(h, hb)` profile carries no information about where the ligand
+binds.
+
+### What was ruled out
+
+The windows themselves are geometrically sound: across 4657 windows of 5
+consecutive sites, the median maximum internal distance is **7.63 Å** and the
+median radius of gyration **3.09 Å**, so a window is a legitimate local surface
+patch roughly the size of a binding site (only 25.8% exceed 10 Å, mostly at
+chain discontinuities). The failure is that chemically distinct patches of a
+protein surface have indistinguishable pharmacophore profiles.
+
+The 3D arrangement of the sites — which is what protein-ligand complementarity
+actually depends on — is discarded when the pocket is flattened into the chain.
+The per-site `coords` survive in the flat chain but never enter the encoding.
+Making the descriptor geometry-aware (e.g. pairwise distances between a window's
+sites, as in classical pharmacophore triplet fingerprints) is the change that
+would have to come before any further work on the quantum ranking.

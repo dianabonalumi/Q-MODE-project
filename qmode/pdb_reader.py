@@ -16,19 +16,26 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 
+# Side chains are written in their physiological protonation state (pH ~7):
+# Asp/Glu carboxylates as -COO-, Lys as -NH3+, Arg as guanidinium. The neutral
+# forms used previously gave every Asp/Glu carboxyl a phantom -OH, i.e. a
+# HBondDonor that does not exist at pH 7, and left every ionizable residue at
+# formal charge 0. His is deliberately left neutral -- its pKa (~6) makes the
+# neutral form dominant at pH 7; the protonated variants already exist as
+# HSP/HIP. Atom order must stay aligned with AMINO_ATOM_NAMES below.
 AMINO_SMILES = {
     "ALA": "CC(N)C(=O)O",
-    "ARG": "N=C(N)NCCCC(N)C(=O)O",
+    "ARG": "[NH2+]=C(N)NCCCC(N)C(=O)O",
     "ASN": "NC(=O)CC(N)C(=O)O",
-    "ASP": "OC(=O)CC(N)C(=O)O",
+    "ASP": "[O-]C(=O)CC(N)C(=O)O",
     "CYS": "SCC(N)C(=O)O",
     "GLN": "NC(=O)CCC(N)C(=O)O",
-    "GLU": "OC(=O)CCC(N)C(=O)O",
+    "GLU": "[O-]C(=O)CCC(N)C(=O)O",
     "GLY": "NCC(=O)O",
     "HIS": "OC(=O)C(N)Cc1c[nH]cn1",
     "ILE": "CCC(C)C(N)C(=O)O",
     "LEU": "CC(C)CC(N)C(=O)O",
-    "LYS": "NCCCCC(N)C(=O)O",
+    "LYS": "[NH3+]CCCCC(N)C(=O)O",
     "MET": "CSCCC(N)C(=O)O",
     "PHE": "OC(=O)C(N)Cc1ccccc1",
     "PRO": "OC(=O)C1CCCN1",
