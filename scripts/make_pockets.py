@@ -35,6 +35,14 @@ ASTEX_TARGETS = [
 ]
 TARGETS += ASTEX_TARGETS
 
+# pdb id (lowercase) -> code of the hetero group the pocket was cropped around.
+# Every downstream stage must look the ligand up here instead of auto-picking
+# the largest HETATM group: on 1HNN, 1HQ2, 1MMV, 1R9O and 1YV3 the largest
+# group is a cofactor bound elsewhere in the structure (SAH, APC, HEM, HEM,
+# ADP), so auto-picking searches for one molecule inside a pocket cropped
+# around a different one, and validates against that other molecule's centroid.
+LIGAND_CODES = {pdb_id.lower(): lig for pdb_id, lig in TARGETS}
+
 # hetero groups that are never real ligands (solvent, ions, common cryoprotectants)
 NON_LIGAND = {
     "HOH", "WAT", "TIP3", "DOD",
