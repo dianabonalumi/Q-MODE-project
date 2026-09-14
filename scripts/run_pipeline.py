@@ -30,6 +30,7 @@ from qmode.site_selection import topological_order
 from qmode.abraham_hbond import assign_abraham_hb_intensities
 from qmode.site_dedup_centroid import select_dedup_centroid
 from qmode.ligand_reader import load_ligand_from_pdb, compute_all_ligand_centroids
+from scripts.make_pockets import LIGAND_CODES
 
 
 def process_residue(rec, surface_filter=True, sasa_threshold=1.0, sasa_map=None):
@@ -261,6 +262,15 @@ def run_pipeline(
         print(f"  Estrazione ligando da: {os.path.basename(ligand_pdb)}")
         print(f"{'-'*60}")
 
+        # On benchmark structures the largest HETATM group is often a cofactor
+        # bound elsewhere, not the ligand the pocket was cropped around, so look
+        # the code up by PDB id before falling back to auto-selection.
+        if ligand_code is None:
+            pdb_id = os.path.splitext(os.path.basename(ligand_pdb))[0].lower()
+            ligand_code = LIGAND_CODES.get(pdb_id)
+            if ligand_code is not None:
+                print(f"  Codice ligando dal benchmark ({pdb_id}): {ligand_code}")
+
         ligand_rec = load_ligand_from_pdb(ligand_pdb, ligand_code=ligand_code)
         if ligand_rec is None:
             print("  Nessun gruppo HETATM valido trovato come ligando (o troppo piccolo).")
@@ -291,6 +301,10 @@ def run_pipeline(
                               f"{c['matching_probability']:.4f}   {c['threshold']:.4f}   "
                               f"{c['interactivity_score']:7.3f}  {', '.join(c['residues'])}")
 
+                    # evaluate_candidates re-sorts by distance, so remember which
+                    # candidate the search actually ranked first before that happens.
+                    top1_start = grover_candidates[0]["window_start_index"]
+
                     ligand_centroids = compute_all_ligand_centroids(ligand_pdb, ligand_rec.res_name)
                     grover_candidates = evaluate_candidates(
                         grover_candidates, flat_chain, ligand_centroids, grover_ligand_size
@@ -301,8 +315,9 @@ def run_pipeline(
                     print(f"  {'Sito':6s}  {'Dist. (Å)':10s}  Residui")
                     print(f"  {'-'*6}  {'-'*10}  {'-'*20}")
                     for c in grover_candidates:
+                        mark = "   <- top-1" if c["window_start_index"] == top1_start else ""
                         print(f"  {c['window_start_index']:6d}  {c['distance_to_ligand_A']:10.3f}  "
-                              f"{', '.join(c['residues'])}")
+                              f"{', '.join(c['residues'])}{mark}")
                 else:
                     print("\n  Nessun sito candidato trovato per il ligando dato.")
 
