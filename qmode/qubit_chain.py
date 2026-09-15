@@ -94,15 +94,18 @@ def build_qubit_chain(
     return segments
 
 
-def print_qubit_chain(segments: List[QubitSegment]):
-    """Stampa i segmenti codificati quantisticamente."""
+def print_qubit_chain(segments: List[QubitSegment], max_rows: int = None):
+    """Print the quantum-encoded segments.
+    Con max_rows stampa solo le prime max_rows righe (utile in demo, dove la
+    tabella completa scorre via dallo schermo); None stampa tutto."""
     if not segments:
-        print("Nessun segmento trovato (ligand_size > siti totali?).")
+        print("No segment found (ligand_size > total sites?).")
         return
 
-    print(f"\n  {'Seg':5s}  {'First Encoding':20s}  Residui Inclusi")
+    print(f"\n  {'Seg':5s}  {'First Encoding':20s}  Residues Included")
     print(f"  {'─'*5}  {'─'*20}  {'─'*30}")
-    for s in segments:
+    shown = segments if max_rows is None else segments[:max_rows]
+    for s in shown:
         residues = []
         for site in s.sites:
             res = site["residue"].split("_")[0]
@@ -111,4 +114,7 @@ def print_qubit_chain(segments: List[QubitSegment]):
         res_str = ", ".join(residues)
         print(f"  {s.segment_idx:5d}  |{s.first_encoding_state}⟩{' '*max(0, 18-len(s.first_encoding_state))}  {res_str}")
 
-    print(f"\n  Totale segmenti (shift): {len(segments)}")
+    if len(shown) < len(segments):
+        print(f"  {'...':5s}  ({len(segments) - len(shown)} rows omitted, --max-rows)")
+
+    print(f"\n  Total segments (shift): {len(segments)}")

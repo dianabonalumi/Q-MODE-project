@@ -1,0 +1,300 @@
+% ═══════════════════════════════════════════════════════════════════
+\subsection{Validation Protocol}
+\label{sec:validation}
+% ═══════════════════════════════════════════════════════════════════
+
+The reference paper proposes to rank candidate docking sites with a SWAP test over the
+second-encoding probability amplitudes. A SWAP test, however, returns a similarity in
+\emph{encoding space}: it can tell that two windows encode similarly, but not that a
+window is spatially correct. Establishing whether the pipeline identifies the binding
+site therefore requires an external, geometric ground truth, which we take to be the
+crystallographic pose of the co-crystallised ligand. This section defines the protocol;
+Section~\ref{sec:results} reports its outcome.
+
+\paragraph{Benchmark set.}
+Evaluation runs in benchmark mode (\texttt{--ligand-pdb}) on the $29$ pockets of the
+$31$-pocket set for which the matching full structure is available (\texttt{1a08} and
+\texttt{1ddm} lack one). The targets are drawn from the Astex Diverse Set plus
+hand-picked complexes, and span diverse protein families and binding-site geometries:
+\textbf{1GM8, 1GPK, 1HNN, 1HQ2, 1HSG, 1IG3, 1K3U, 1L2S, 1MMV, 1N2V, 1N46, 1OPK, 1OYT,
+1Q1G, 1R58, 1R9O, 1S19, 1STP, 1T46, 1TZ8, 1U1C, 1XM6, 1Y6B, 1YGC, 1YV3, 1YWR, 2BSM,
+3PTB} and \textbf{4DFR}.
+
+\paragraph{Distance metric.}
+For a matching window of $k$ sites, the \emph{candidate centroid} is the arithmetic mean
+of the 3D coordinates of its constituent pharmacophoric sites, which are carried
+unchanged from the classical extraction stage. The \emph{true ligand centroid} is
+computed from the experimental \texttt{HETATM} coordinates of the full structure. Because
+asymmetric units frequently contain several bound copies of the same ligand, a centroid
+is computed for every copy and the reported metric is the \emph{minimum} Euclidean
+distance to any valid copy. This avoids penalising a prediction that correctly targets a
+secondary but genuine binding pocket.
+
+\paragraph{Percentile normalisation.}
+Raw distances in \AA{} are not comparable across pockets of different size: an $8$~\AA{}
+error is near-random in a small pocket and good in a large one. Every candidate is
+therefore also reported as its \emph{percentile rank} within the distribution of the
+distances of \emph{all} sliding windows of the same pocket, where $0\%$ is the closest
+window the representation makes available at all, and $50\%$ is chance. The percentile
+is the primary metric throughout Section~\ref{sec:results}; absolute distances are
+reported alongside it for interpretability.
+
+\paragraph{Random baseline.}
+A percentile is not by itself a sufficient reference, because the pipeline returns
+several candidates per pocket and reporting the best of them is a minimum-of-$n$
+statistic, which is biased low even for a search that carries no information. For $n$
+windows drawn uniformly at random, the expected percentile of the best is
+\begin{equation}
+    \mathbb{E}\!\left[\min\nolimits_n\right] = \frac{1}{n+1}.
+    \label{eq:baseline}
+\end{equation}
+The baseline is evaluated per pocket with that pocket's own candidate count $n$ and then
+averaged, so that the comparison is like-for-like. The ``best of candidates'' row of
+Table~\ref{tab:percentile} must be read against this baseline; the ``top-1'' row, which
+selects a single window before seeing the ground truth, is read against $50\%$.
+
+\paragraph{Two matching regimes.}
+Both variants of the search are evaluated under the identical protocol:
+\begin{enumerate}[leftmargin=1.6em]
+    \item the \textbf{exact} regime, in which a window matches when its first-encoding
+          bitstring equals the ligand's, as prescribed by the reference paper;
+    \item the \textbf{amplitude} regime, in which exact equality is replaced by a
+          Euclidean distance in the second-encoding amplitude space --- the classical
+          counterpart of the paper's SWAP-test similarity.
+\end{enumerate}
+
+\paragraph{Classical measurement of a quantum search.}
+Both regimes are measured classically rather than by executing the circuit on every
+pocket. This is exact, not an approximation. The oracle
+$\hat{O} = I - 2\ket{x_{\text{lig}}}\!\bra{x_{\text{lig}}}$ implements equality against a
+fixed bitstring, so the set of windows that satisfy it is fully determined by the
+encoding \emph{before} any circuit is prepared; amplitude amplification changes which
+element of that set is measured, never the set itself. The classical enumeration
+therefore characterises the ceiling of the method exactly, while making it feasible to
+sweep window sizes and matching regimes over the whole benchmark --- which the dense
+unitary synthesis of Section~\ref{sec:grover-search} would not allow.
+
+
+% ═══════════════════════════════════════════════════════════════════
+\section{Results}
+\label{sec:results}
+% ═══════════════════════════════════════════════════════════════════
+
+This section reports the measurements only; their interpretation is deferred to
+Section~\ref{sec:why}.
+
+% ───────────────────────────────────────────────────────────────────
+\subsection{The search does not localise the binding site}
+\label{sec:res-accuracy}
+
+At the default configuration ($k=3$ sites, $6$ qubits), $23$ of the $29$ pockets produce
+candidates. The $6$ that do not all fail for the same reason: no window clears the
+uniform $1/N$ probability threshold. Pockets that do produce candidates produce few:
+$2.43$ on average, never more than $3$.
+
+The median distance from the top-ranked candidate to the true ligand centroid is
+$7.75$~\AA{}, and only $2$ of the $23$ cases fall within a $5.0$~\AA{} threshold
+(a third, 1OYT, lands on it at $5.0005$~\AA{})
+(Table~\ref{tab:distances}). Table~\ref{tab:percentile} normalises these distances
+against the pocket-specific random baseline of Equation~\eqref{eq:baseline}.
+
+\begin{table}[htbp]
+\centering
+\caption{Percentile ranking of the Grover candidate windows relative to all possible
+windows of the same pocket ($k=3$). Lower is better; $50\%$ is chance.}
+\label{tab:percentile}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Metric} & \textbf{Mean percentile} & \textbf{Median} & \textbf{Random baseline} \\
+\midrule
+Top-1 by interactivity score   & $47.2\%$ & $42.0\%$ & $50.0\%$ \\
+Best of the candidates returned & $32.2\%$ & $26.2\%$ & $30.8\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two observations follow directly from the table. First, the candidate \emph{set} is
+statistically indistinguishable from drawing the same number of windows at random:
+$32.2\%$ against a $30.8\%$ baseline is well within the spread of the benchmark, and on
+the wrong side of it. Second, the top-1 candidate is \emph{worse} than the best of the
+candidates returned ($47.2\%$ vs.\ $32.2\%$), which means that ranking by aggregate
+$h/hb$ interactivity does not merely fail to help --- it actively degrades the selection.
+The effect is large on individual targets: 4DFR is ranked at the $97.8$th percentile
+while its own best candidate sits at the $33.0$th, 1N46 at the $92.1$st against
+$14.6$th, and 1YGC at the $95.8$th against $74.7$th.
+
+\begin{table}[htbp]
+\centering
+\caption{Minimum Euclidean distance between the true ligand centroid and the top-ranked
+candidate window ($k=3$) across the $29$ evaluated protein--ligand pairs.
+\emph{Failed (Threshold)} indicates that no exact bitstring match cleared the $1/N$
+amplitude threshold.}
+\label{tab:distances}
+\begin{tabular}{llll}
+\toprule
+\textbf{Target} & \textbf{Top-1 distance (\AA)} & \textbf{Target} & \textbf{Top-1 distance (\AA)} \\
+\midrule
+\texttt{1GM8} & $9.74$  & \texttt{1R9O} & $7.76$ \\
+\texttt{1GPK} & $7.40$  & \texttt{1S19} & $8.64$ \\
+\texttt{1HNN} & \emph{Failed (Threshold)} & \texttt{1STP} & \emph{Failed (Threshold)} \\
+\texttt{1HQ2} & $6.93$  & \texttt{1T46} & $9.00$ \\
+\texttt{1HSG} & $6.48$  & \texttt{1TZ8} & \emph{Failed (Threshold)} \\
+\texttt{1IG3} & $4.26$  & \texttt{1U1C} & $6.52$ \\
+\texttt{1K3U} & $7.62$  & \texttt{1XM6} & \emph{Failed (Threshold)} \\
+\texttt{1L2S} & $6.49$  & \texttt{1Y6B} & $7.75$ \\
+\texttt{1MMV} & $9.21$  & \texttt{1YGC} & $22.18$ \\
+\texttt{1N2V} & \emph{Failed (Threshold)} & \texttt{1YV3} & $5.10$ \\
+\texttt{1N46} & $12.08$ & \texttt{1YWR} & $8.22$ \\
+\texttt{1OPK} & $11.93$ & \texttt{2BSM} & $11.20$ \\
+\texttt{1OYT} & $5.00$  & \texttt{3PTB} & $6.81$ \\
+\texttt{1Q1G} & $4.50$  & \texttt{4DFR} & $14.23$ \\
+\texttt{1R58} & \emph{Failed (Threshold)} & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Is the criterion reachable?} A distance of $7.75$~\AA{} is only meaningful once
+it is known how close a correct answer could have come. The ligand centroid lies in the
+middle of the cavity, in empty space, whereas pharmacophoric sites lie on the atoms that
+line it, so there is a floor below which no window can fall. If that floor were above
+$5$~\AA{} the criterion of Table~\ref{tab:distances} would be unreachable by
+construction and the benchmark would be measuring pocket geometry rather than the
+descriptor. We therefore computed, for every pocket, the distance to the ligand centroid
+of the \emph{closest window that exists at all} --- the ceiling on any possible search
+--- and of the \emph{median window}, which is the chance level expressed in \AA{}
+rather than as a percentile. Both quantities range over all unit-stride windows, the same
+population against which Table~\ref{tab:percentile} normalises, and neither involves the
+oracle, the acceptance threshold or the ranking; they are properties of the
+representation alone, and are defined even for the two pockets whose parsed ligand yields
+no pharmacophoric sites. Table~\ref{tab:ceiling} reports them.
+
+\begin{table}[htbp]
+\centering
+\caption{Reachability of the $5$~\AA{} criterion at $k=3$, over all unit-stride windows
+of the $29$ evaluated pockets. \emph{Best window} is the closest window that exists in
+the representation; \emph{median window} is the chance level in \AA{}. Medians
+are taken across pockets.}
+\label{tab:ceiling}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Window} & \textbf{Median} & \textbf{Range across pockets} \\
+\midrule
+Best available in the representation (ceiling) & $3.76$~\AA{} & $1.21$--$5.67$ \\
+Median window of the pocket (chance)           & $7.88$~\AA{} & $6.39$--$10.99$ \\
+Top-1 returned by the search (Table~\ref{tab:distances}) & $7.75$~\AA{} & $4.26$--$22.18$ \\
+\midrule
+\multicolumn{2}{l}{Pockets where a window within $5$~\AA{} exists} & $25/29$ \\
+\multicolumn{2}{l}{Pockets where the search returns one, of those reachable} & $2/19$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The criterion is therefore fair: in $25$ of the $29$ pockets a window within $5$~\AA{} of
+the ligand centroid is physically present in the representation, and the median target
+sits at $3.76$~\AA{}. The four exceptions --- 1OPK, 1S19, 1Y6B and 1YWR, whose ceilings
+lie between $5.01$ and $5.67$~\AA{} --- are large pockets in which no window of three
+sites reaches the centre of the cavity, and they are the only cases where a failure at
+$5$~\AA{} carries no information about the descriptor. All four returned a candidate and
+are therefore counted among the $23$ pockets of Table~\ref{tab:distances}; excluding them
+leaves $19$ pockets on which the criterion could in principle have been met, and the
+success rate is properly read as $2/19$ rather than $2/23$.
+
+The table also restates the result of Table~\ref{tab:percentile} in absolute units,
+which is how it is most easily read: the target was at $3.76$~\AA{}, drawing a window at
+random gives $7.88$~\AA{}, and the search returns $7.75$~\AA{}. The measured gap between
+chance and the search is $0.13$~\AA{} on the useful side, against the $4.12$~\AA{} that
+separates chance from the best answer available. The search recovers essentially none of
+the distance it had room to recover, and it does so on pockets where that room
+demonstrably exists.
+
+% ───────────────────────────────────────────────────────────────────
+\subsection{Neither the window size nor the matching regime recovers the signal}
+\label{sec:res-sweep}
+
+Because the matching set is determined classically, its quality can be measured
+directly, independently of any ranking applied afterwards. Table~\ref{tab:ksweep}
+reports the sweep over the window size $k$ in the exact regime.
+
+\begin{table}[htbp]
+\centering
+\caption{Effect of the sliding-window size on exact-bitstring-match coverage and on the
+spatial percentile of the matching set.}
+\label{tab:ksweep}
+\begin{tabular}{ccccc}
+\toprule
+\textbf{Max sites ($k$)} & \textbf{Coverage} & \textbf{Median match percentile} & \textbf{Best of set} & \textbf{Baseline} \\
+\midrule
+$3$ & $23/29$ & $48.2\%$ & $16.8\%$ & $18.4\%$ \\
+$4$ & $12/29$ & $49.7\%$ & $11.7\%$ & $23.9\%$ \\
+$5$ & $7/29$  & $31.1\%$ & $9.8\%$  & $39.9\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At $k=3$ the matching set sits at the $48.2$nd percentile --- exactly chance. Since a
+ranking function reorders a set without adding information to it, this bounds what any
+ranking criterion whatsoever could achieve at the default configuration. Raising $k$ to
+$5$ does produce a measurable signal ($9.8\%$ against a $39.9\%$ expected baseline),
+but coverage collapses from $23$ to $7$ pockets. The cause is informational rather than
+chemical: the bitstring takes $4^k$ values, so at $k=3$ its $64$ codes are spread over
+the $56$--$616$ windows of a typical pocket and collisions are frequent, whereas at
+$k=5$ the $1024$ codes make an exact match rare --- rarer, in most pockets, than the
+ligand's own code occurring at all.
+
+Replacing exact equality with a distance in the second-encoding amplitude space
+decouples the two effects. At $k=5$ this restores coverage from $7/29$ to $27/29$
+pockets --- a genuine and worthwhile gain --- but leaves accuracy unchanged: the top-1
+candidate lands at the $45.8$th percentile (median $42.1$th, fidelity-ranked $45.0$th),
+against $50\%$ for chance, and the best of three candidates at the $28.1$th against
+$25\%$ expected from three random draws. Coverage and accuracy are therefore governed by
+different bottlenecks, and only the first is a property of the matching criterion.
+
+% ───────────────────────────────────────────────────────────────────
+\subsection{The sliding windows are spatially well formed}
+\label{sec:res-geometry}
+
+A natural suspicion is that $k$ consecutive sites of the flat chain are spatially
+scattered, so that a window would not correspond to any physical patch of the pocket
+surface and the comparison against a ligand centroid would be meaningless. Measured over
+all windows of all pockets at $k=5$, this is not the case: the median window span is
+$7.63$~\AA{} with a median radius of gyration of $3.09$~\AA{}, and only $25.8\%$ of
+windows exceed $10$~\AA{}. Windows are compact, local surface patches of a size
+comparable to a small ligand. The chain-assembly and topological-ordering stages of
+Sections~\ref{sec:topological-order}--\ref{sec:chain-assembly} therefore do preserve spatial coherence,
+as they were designed to.
+
+% ───────────────────────────────────────────────────────────────────
+\subsection{The descriptor carries no information about ligand position}
+\label{sec:res-spearman}
+
+The preceding subsections bound the performance of the search without explaining it. The
+decisive measurement removes the search entirely and asks whether the descriptor and the
+ground truth are related at all. For every window of every pocket we computed its
+distance from the ligand in second-encoding amplitude space and its true 3D distance
+from the ligand centroid, and correlated the two by Spearman's rank coefficient. At the
+default window size $k=3$, over all 29 benchmark pockets:
+
+\begin{center}
+\begin{tabular}{lc}
+\toprule
+Mean $\rho$ across pockets      & $-0.008$ \\
+Median $\rho$                   & $+0.013$ \\
+Pockets with $|\rho| > 0.3$     & $2/29$ \\
+Pockets with the correct sign   & $16/29$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Widening the window does not change the picture: at $k=5$ the mean is $+0.020$, the
+median $+0.069$, and the sign is correct in 17 of 29 pockets.
+
+The correlation is absent rather than weak, and the sign is correct in barely more than
+half the pockets, as expected from noise. Two windows that encode similarly are no more likely to be
+spatially close to each other, or to the ligand, than two windows chosen at random.
+Since this quantity is measured over all windows and involves neither the oracle, nor
+the acceptance threshold, nor the ranking, it is a property of the representation alone.
+
+\todo[inline, color=yellow!40]{Da completare: sottosezione con i tre controlli
+(degenerazione del codice, AUC contro la ground truth, controllo positivo con le
+distanze fra siti) e il controllo di robustezza escludendo le \texttt{PosIonizable} di
+backbone. Vedi \texttt{scripts/diagnose\_descriptor.py}.}

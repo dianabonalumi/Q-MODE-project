@@ -56,10 +56,17 @@ Q-MODE-project/
 ├── scripts/
 │   ├── run_pipeline.py         # Main CLI entry point (whole protein or cropped pocket PDB)
 │   ├── plot_residue_chain.py   # 3D structure + 1D chain visualization for a single residue
+│   ├── visualize_features.py   # Interactive 3D page: pharmacophore sites before/after the SASA filter
+│   ├── visualize_chain.py      # Interactive 3D page: the flat chain, plus the site table
+│   ├── percentile_eval.py      # Benchmark table: ceiling / chance / top-1 percentile per target
+│   ├── make_demo_figure.py     # Closing figure of the demo, built from the percentile table
 │   └── make_pockets.py         # Downloads sample PDB structures and crops binding pockets
 ├── data/
 │   └── raw/                    # Input / generated pocket PDB files
 ├── tests/                      # Unit tests
+├── report/
+│   ├── demo_runbook.md         # Step-by-step script for the live demo
+│   └── figures/                # Generated figures (PNGs are gitignored)
 ├── Report/                     # Project report (PDF)
 ├── requirements.txt
 └── setup.py
@@ -146,6 +153,100 @@ python scripts/plot_residue_chain.py --pdb data/raw/3PTB_pocket.pdb --chain A --
 | `--ligand-pdb` | `None` | Path to a PDB file containing the ligand's HETATM records (e.g. the full structure downloaded from PDB). When set, runs Grover search with the extracted ligand |
 | `--ligand-code` | `None` | 3-letter ligand code to disambiguate when `--ligand-pdb` has multiple non-water HETATM groups. Default: auto-picks the group with the most heavy atoms |
 | `--ligand-max-sites` | `3` | Max number of ligand pharmacophore sites used by Grover (6 qubits). Raising this past ~5 sites (10+ qubits) makes oracle/diffusion synthesis very slow in Qiskit |
+| `--max-rows` | `None` | Truncate the two long tables (flat sequence and quantum encoding) to their first N rows. On a typical pocket each is 120+ rows; meant for presenting on a projector. Default prints everything |
+
+---
+
+## Demo: running the whole thing on one target
+
+A four-minute walkthrough on **1HSG** (HIV-1 protease bound to the inhibitor MK1) that
+takes a pocket from PDB file to Grover candidates. The computation itself takes about six
+seconds, runs entirely offline, and needs no quantum hardware — Grover runs on the Qiskit
+simulator.
+
+`report/demo_runbook.md` is the full script: what to say at each step, the numbers to have
+ready, and the fallback if the projector misbehaves. The short version follows.
+
+### Setup
+
+The demo needs both the cropped pocket and the full structure it came from. The full
+structures are gitignored (they are regenerable), so fetch them first:
+
+```bash
+python scripts/make_pockets.py
+```
+
+Then build the two interactive pages:
+
+```bash
+python scripts/visualize_features.py --pdb-pocket data/raw/1HSG.pdb --pdb-protein data/raw/1HSG.pdb --output features_1hsg_protein.html
+```
+
+```bash
+python scripts/visualize_chain.py --pdb data/raw/1hsg_pocket.pdb --output chain_1hsg.html
+```
+
+Open both in a browser window **at least 1280 px wide** — below that the 3D panel stays
+narrow and the molecule spills out of its frame.
+
+### The four steps
+
+**1. What the pipeline starts from.** `features_1hsg_protein.html` shows the 966
+pharmacophore sites RDKit finds on the protein, next to the 559 that survive the SASA
+filter (−42%). Both panels are rendered at the same scale, so the difference reads as
+"fewer sites", not "a smaller protein".
+
+**2. How the pocket becomes a sequence.** `chain_1hsg.html` shows the 126 sites of the
+pocket as one ordered chain in 3D — BFS over the bond graph within each residue, residues
+in chain order. Thick lines are hops inside a residue, thin lines are residue changes.
+Rotating the molecule shows the 1D chain jumping back and forth in space.
+
+**3. The run.**
+
+```bash
+python scripts/run_pipeline.py --pdb data/raw/1hsg_pocket.pdb --ligand-pdb data/raw/1HSG.pdb --max-rows 12 2>/dev/null
+```
+
+`--max-rows 12` keeps the flat-sequence and encoding tables (126 and 124 rows) on one
+screen; `2>/dev/null` hides RDKit's warnings. Without either flag the output is the usual
+complete one.
+
+The run ends on three Grover candidates, validated against the real ligand position. The
+top two are `A25_ASP` and `B25_ASP` — the catalytic aspartates of HIV protease, the active
+site every inhibitor targets. The top-1 sits 6.48 Å from MK1's centroid.
+
+Grover samples at finite shots, so the printed probabilities move by a few thousandths
+between runs. The candidates, their order and the distances do not.
+
+**4. What the result is actually worth.** This is the part not to skip.
+
+```bash
+python scripts/percentile_eval.py 3 2>/dev/null > report/figures/percentile_k3.txt
+python scripts/make_demo_figure.py
+```
+
+This writes `report/figures/demo_ceiling_chance.png`: one row per pocket, a segment from
+the *ceiling* (the best window the representation makes available) to *chance* (the
+average window), with Grover's top-1 plotted on it. The dots are scattered across the
+whole segment with no pull towards the ceiling; nine of 23 land beyond chance. Over the
+29 pockets the top-1 sits at the 47.2nd percentile on average, against 50 for chance.
+
+1HSG is one of the better cases — 13.7th percentile — which is exactly why the demo should
+not end at step 3. See [Benchmark Results](#benchmark-results) for the full picture.
+
+### Trying other targets
+
+Any of the 29 benchmark pockets works, with the pocket in lowercase and the full structure
+in uppercase:
+
+```bash
+python scripts/run_pipeline.py --pdb data/raw/1ig3_pocket.pdb --ligand-pdb data/raw/1IG3.pdb --max-rows 12 2>/dev/null
+```
+
+Six targets (1HNN, 1N2V, 1R58, 1STP, 1TZ8, 1XM6) print `No candidate site found for the
+given ligand`: no window clears the 1/N threshold. That is a result, not a crash. The two
+pockets without a full structure in `data/raw/` — 1a08 and 1ddm — run up to the flat chain
+but cannot run Grover.
 
 ---
 
@@ -239,82 +340,123 @@ Not yet implemented, and **currently not worth implementing**: the paper's own S
 
 ## Benchmark Results
 
-Measured 2026-08-23 on the 29 pockets in `data/raw/` that have a matching full
-structure (`1a08` and `1ddm` do not), after the feature-extraction fixes of the
-same date. Reproduce with:
+Measured 2026-09-15 on the 29 pockets in `data/raw/` that have a matching full
+structure (`1a08` and `1ddm` do not). The aggregate tables below are reproduced by:
+
+```bash
+python scripts/percentile_eval.py 3 4 5
+```
+
+and a single target by:
 
 ```bash
 python scripts/run_pipeline.py --pdb data/raw/<x>_pocket.pdb --ligand-pdb data/raw/<X>.pdb
 ```
 
+> Earlier versions of these numbers (21/29 pockets, 8.22 Å median) were measured before
+> a ligand-selection fix: on five targets `load_ligand_from_pdb` was auto-picking the
+> largest HETATM group, which is a cofactor bound elsewhere rather than the ligand the
+> pocket was cropped around. `make_pockets.LIGAND_CODES` now pins the right code per
+> structure. The conclusion did not change; the numbers did.
+
 ### Headline: the search does not localize the binding site
 
-At the default `--ligand-max-sites 3`, 21 of 29 pockets produce candidates
-(2 fail because the ligand yields no pharmacophore sites — both are HEM — and 6
-because no window clears the `1/N` probability threshold). Median distance from
-the top-ranked candidate's window centroid to the true ligand centroid is
-**8.22 Å**; only 3 of 21 land within 5 Å.
+At the default `--ligand-max-sites 3`, **23 of 29** pockets produce candidates, 2.43 per
+pocket on average. The other 6 produce none because no window clears the `1/N`
+probability threshold. Median distance from the top-ranked candidate's window centroid to
+the true ligand centroid is **7.75 Å** (range 4.26–22.18); only **2 of 23** land within
+5 Å.
 
-Absolute distances depend on pocket size, so the meaningful measure is where a
-candidate falls in the distribution of *all* possible windows of that pocket
-(0% = closest window in the protein, 50% = indistinguishable from chance):
+Absolute distances depend on pocket size, so the meaningful measure is where a candidate
+falls in the distribution of *all* possible windows of that pocket (0% = closest window in
+the protein, 50% = indistinguishable from chance):
 
 | | mean percentile | median | random baseline |
 |---|---|---|---|
-| Top-1 by `interactivity_score` | 38.9% | 39.0% | 50.0% |
-| Best of the candidates returned | 29.3% | 23.6% | 32.1% |
+| Top-1 by `interactivity_score` | 47.2% | 42.0% | 50.0% |
+| Best of the candidates returned | 32.2% | 26.2% | 30.8% |
 
-The random baseline for "best of *n* candidates" is `E[min] = 1/(n+1)` over the
-observed candidate counts (mean 2.33 per pocket). **Grover's candidate set is
-not better than picking the same number of windows at random.**
+The random baseline for "best of *n* candidates" is `E[min] = 1/(n+1)` over the observed
+candidate counts. **Grover's candidate set is not better than picking the same number of
+windows at random**, and ranking within it by `interactivity_score` is not better than
+picking one of them at random.
+
+The 5 Å criterion is not out of reach for the representation: the closest window available
+in each pocket (the *ceiling*) has a median distance of **3.76 Å**, and 25 of 29 pockets
+contain at least one window within 5 Å. The average window (*chance*) sits at **7.88 Å** —
+and the search's top-1, at 7.75 Å, lands next to it rather than next to the ceiling.
+`scripts/make_demo_figure.py` draws this one row per pocket.
 
 ### The bottleneck is the descriptor, not the ranking
 
-Ranking criteria and window size were both tested and neither is the limiting
-factor. Because Grover searches for an exact bitstring, the set of windows
-matching the ligand is determined classically, so its quality can be measured
-directly:
+Ranking criteria and window size were both tested and neither is the limiting factor.
+Because Grover searches for an exact bitstring, the set of windows matching the ligand is
+determined classically, so its quality can be measured directly:
 
 | `--ligand-max-sites` | pockets with a match | median percentile of the matching set | best of the set | random baseline |
 |---|---|---|---|---|
-| 3 | 21/29 | 49.8% | 21.0% | 18.4% |
-| 4 | 11/29 | 45.2% | 20.0% | 21.5% |
-| 5 | 6/29 | 30.1% | 21.5% | 38.2% |
+| 3 | 23/29 | 48.2% | 16.8% | 18.4% |
+| 4 | 12/29 | 49.7% | 11.7% | 23.9% |
+| 5 | 7/29 | 31.1% | 9.8% | 39.9% |
 
-At the default `k=3` the matching set sits at the 49.8th percentile — exactly
-chance — so no ranking criterion can help: there is nothing to rank. Larger `k`
-does buy real signal (at `k=5`, 21.5% measured against 38.2% expected by chance)
-but coverage collapses to 6 pockets, because the bitstring has `4^k` possible
-values and an exact match becomes vanishingly rare.
+At the default `k=3` the matching set sits at the 48.2nd percentile — essentially chance —
+so no ranking criterion can help: there is nothing to rank. Larger `k` does buy real signal
+(at `k=5` the best of the matching set is at 9.8% against 39.9% expected by chance), but
+coverage collapses to 7 pockets, because the bitstring has `4^k` possible values and an
+exact match becomes vanishingly rare. And the signal does not survive the pipeline's own
+selection: at `k=5` the actual top-1 lands at the 54.7th percentile on average, i.e. worse
+than chance.
 
-Replacing the exact bitstring match with a distance on the second encoding's
-amplitudes restores coverage (27/29 pockets at `k=5`) but not accuracy: top-1 by
-Euclidean amplitude distance lands at the 45.8th percentile, by fidelity
-(the classical analogue of the SWAP test) at 45.0th.
+Replacing the exact bitstring match with a distance on the second encoding's amplitudes
+restores coverage (29/29 pockets at `k=5`) but not accuracy: top-1 by Euclidean amplitude
+distance lands at the 44.8th percentile on average (42.1st median), and best-of-3 at 27.8%
+against 25% expected from three random draws. *(Measured separately; no script in the repo
+reproduces this regime yet.)*
 
-The reason shows up in the Spearman correlation between amplitude-space
-similarity to the ligand and true 3D distance to it, over every window of every
-pocket:
+The reason shows up in the Spearman correlation between amplitude-space similarity to the
+ligand and true 3D distance to it, over every window of every pocket — reproduce with
+`python scripts/diagnose_descriptor.py 3 5`:
 
 ```
-rho mean +0.007   median +0.063   |rho| > 0.3 in 2/27   correct sign in 14/27
+k=3   rho mean -0.008   median +0.013   |rho| > 0.3 in 2/29   correct sign in 16/29
+k=5   rho mean +0.020   median +0.069   |rho| > 0.3 in 4/29   correct sign in 17/29
 ```
 
-Zero. A window's `(h, hb)` profile carries no information about where the ligand
-binds.
+Zero. A window's `(h, hb)` profile carries no information about where the ligand binds.
+
+The encoding is also badly degenerate. Across the 29 benchmark ligands, the 6-qubit first
+encoding takes only **9 distinct values out of 64 possible**, and a single state,
+`|010101⟩`, covers 11 of them — MK1 (an HIV protease inhibitor) and FSN (a thrombin
+inhibitor) are the same object as far as the oracle is concerned. Within a pocket, windows
+that share a bitstring have centroids 17.21 Å apart on average, against 16.66 Å for random
+pairs: never closer than chance. Effective entropy is 4.10 of 6 bits at `k=3` and 5.59 of
+10 at `k=5`.
 
 ### What was ruled out
 
-The windows themselves are geometrically sound: across 4657 windows of 5
-consecutive sites, the median maximum internal distance is **7.63 Å** and the
-median radius of gyration **3.09 Å**, so a window is a legitimate local surface
-patch roughly the size of a binding site (only 25.8% exceed 10 Å, mostly at
-chain discontinuities). The failure is that chemically distinct patches of a
-protein surface have indistinguishable pharmacophore profiles.
+**It is not the known defects.** Removing the spurious `PosIonizable` sites (keeping them
+only on ARG/LYS/HIS) moves the correlation from -0.0119 to -0.0122 and leaves the AUC
+unchanged at 0.654.
 
-The 3D arrangement of the sites — which is what protein-ligand complementarity
-actually depends on — is discarded when the pocket is flattened into the chain.
-The per-site `coords` survive in the flat chain but never enter the encoding.
-Making the descriptor geometry-aware (e.g. pairwise distances between a window's
-sites, as in classical pharmacophore triplet fingerprints) is the change that
-would have to come before any further work on the quantum ranking.
+**It is not the loss of 3D geometry.** This was the obvious hypothesis — the per-site
+`coords` survive in the flat chain but never enter the encoding — and it was tested and
+rejected. Median per-pocket AUC, cross-validated within each pocket: amplitudes alone
+0.654, amplitudes plus the pairwise distances between a window's sites 0.658, six channels
+with donors and acceptors separated 0.612, six channels plus distances 0.615. Under a
+scale-free label (the closest 10% of windows, all 29 pockets) every variant falls between
+0.47 and 0.55. **Making the descriptor geometry-aware does not recover signal.**
+
+**The windows are not geometrically absurd, but they are not surface patches either.**
+Across windows of 5 consecutive sites the median maximum internal distance is 7.63 Å and
+the median radius of gyration 3.09 Å, which looks like a legitimate local patch. But the
+chain is ordered residue by residue, and within a residue by BFS over the bond graph, so a
+short window is almost always a single sidechain rather than a patch of surface. The
+windows are compact because they are one residue, not because they trace a pocket.
+
+**What is actually missing is the empty space.** Binding is complementarity, bulk and
+burial, and none of the three is expressible as a list of *k* sites with intensities —
+with or without their pairwise distances. What distinguishes a pocket is the cavity
+*around* the sites. The SASA filter measures global solvent accessibility, not membership
+in a cavity, so it keeps every exposed site on the protein surface and has no way to
+prefer the concave ones. Replacing it with a cavity detector (fpocket, CASTp) is the
+change that would have to come before any further work on the quantum ranking.
