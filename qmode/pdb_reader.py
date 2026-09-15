@@ -229,7 +229,7 @@ def residue_to_mol(rec: ResidueRecord) -> Optional[object]:
     names correct by construction); bond order and aromaticity assigned by
     comparison against a known template."""
     if rec.res_name not in AMINO_SMILES:
-        warnings.warn(f"Residuo sconosciuto: {rec.res_name}")
+        warnings.warn(f"Unknown residue: {rec.res_name}")
         return None
 
     has_oxt = any(a["name"].strip() == "OXT" for a in rec.atoms)
@@ -238,7 +238,7 @@ def residue_to_mol(rec: ResidueRecord) -> Optional[object]:
     pdb_block = _atoms_to_pdb_block(rec)
     mol_from_pdb = Chem.MolFromPDBBlock(pdb_block, sanitize=False, removeHs=False)
     if mol_from_pdb is None:
-        warnings.warn(f"{rec.label}: impossibile costruire la molecola dagli atomi PDB")
+        warnings.warn(f"{rec.label}: could not build the molecule from the PDB atoms")
         return None
 
     try:
@@ -246,8 +246,8 @@ def residue_to_mol(rec: ResidueRecord) -> Optional[object]:
         Chem.SanitizeMol(mol)
     except Exception as e:
         warnings.warn(
-            f"{rec.label}: assegnazione ordini di legame fallita ({e}) — "
-            f"probabile residuo con atomi mancanti o non standard, saltato"
+            f"{rec.label}: bond-order assignment failed ({e}) — "
+            f"likely a residue with missing or non-standard atoms, skipped"
         )
         return None
 
@@ -264,17 +264,17 @@ def mol_from_amino_acid(res_name: str, chain_id: str = "A", res_seq: int = 1):
     and assign_abraham_hb_intensities() work the same as with a real PDB,
     without crystallographic coordinates."""
     if res_name not in AMINO_SMILES:
-        warnings.warn(f"Residuo sconosciuto: {res_name}")
+        warnings.warn(f"Unknown residue: {res_name}")
         return None
 
     mol = Chem.MolFromSmiles(AMINO_SMILES[res_name])
     if mol is None:
-        warnings.warn(f"{res_name}: SMILES non valido")
+        warnings.warn(f"{res_name}: invalid SMILES")
         return None
 
     names = AMINO_ATOM_NAMES[res_name]
     if mol.GetNumAtoms() != len(names):
-        warnings.warn(f"{res_name}: AMINO_ATOM_NAMES disallineato con lo SMILES")
+        warnings.warn(f"{res_name}: AMINO_ATOM_NAMES out of sync with the SMILES")
         return None
 
     mol = Chem.AddHs(mol)

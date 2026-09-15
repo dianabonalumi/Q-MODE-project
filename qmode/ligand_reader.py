@@ -47,7 +47,7 @@ def fetch_ccd_smiles(ligand_code: str, timeout: float = 5.0) -> Optional[str]:
         if chosen:
             smiles = chosen if isinstance(chosen, str) else chosen.get("descriptor")
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
-        warnings.warn(f"fetch_ccd_smiles({ligand_code}): rete/parsing fallito ({e})")
+        warnings.warn(f"fetch_ccd_smiles({ligand_code}): network/parsing failed ({e})")
 
     _CCD_CACHE[ligand_code] = smiles
     return smiles
@@ -185,7 +185,7 @@ def ligand_to_mol(rec: LigandRecord) -> Optional[object]:
     pdb_block = _ligand_atoms_to_pdb_block(rec)
     mol_from_pdb = Chem.MolFromPDBBlock(pdb_block, sanitize=False, removeHs=False)
     if mol_from_pdb is None:
-        warnings.warn(f"{rec.label}: impossibile costruire la molecola dagli atomi PDB")
+        warnings.warn(f"{rec.label}: could not build the molecule from the PDB atoms")
         return None
 
     smiles = fetch_ccd_smiles(rec.res_name)
@@ -199,8 +199,8 @@ def ligand_to_mol(rec: LigandRecord) -> Optional[object]:
                 return mol
             except Exception as e:
                 warnings.warn(
-                    f"{rec.label}: template CCD non applicabile ({e}), "
-                    f"ricado sulla bond-order perception geometrica"
+                    f"{rec.label}: CCD template not applicable ({e}), "
+                    f"falling back to geometric bond-order perception"
                 )
 
     try:
@@ -209,8 +209,8 @@ def ligand_to_mol(rec: LigandRecord) -> Optional[object]:
         rdDetermineBonds.DetermineBonds(mol, charge=0)
         Chem.SanitizeMol(mol)
         mol = Chem.AddHs(mol, addCoords=True)
-        warnings.warn(f"{rec.label}: legami assegnati per geometria (nessun template CCD)")
+        warnings.warn(f"{rec.label}: bonds assigned by geometry (no CCD template)")
         return mol
     except Exception as e:
-        warnings.warn(f"{rec.label}: bond-order perception geometrica fallita ({e})")
+        warnings.warn(f"{rec.label}: geometric bond-order perception failed ({e})")
         return None

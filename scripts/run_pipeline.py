@@ -43,7 +43,7 @@ def process_residue(rec, surface_filter=True, sasa_threshold=1.0, sasa_map=None)
     try:
         features = extract_features(rec.mol, embed_3d=True)
         if not features:
-            warnings.warn(f"  {rec.label}: nessuna feature estratta, skip")
+            warnings.warn(f"  {rec.label}: no feature extracted, skipping")
             return None
 
         assign_abraham_hb_intensities(features, res_name=rec.res_name, mol=rec.mol, atom_records=rec.atoms)
@@ -71,7 +71,7 @@ def process_residue(rec, surface_filter=True, sasa_threshold=1.0, sasa_map=None)
         return sites
 
     except Exception as e:
-        warnings.warn(f"  {rec.label}: errore — {e}")
+        warnings.warn(f"  {rec.label}: error — {e}")
         return None
 
 
@@ -87,7 +87,7 @@ def process_ligand(ligand_rec, max_sites=6):
     try:
         features = extract_features(ligand_rec.mol, embed_3d=True)
         if not features:
-            warnings.warn(f"  {ligand_rec.label}: nessuna feature estratta, skip")
+            warnings.warn(f"  {ligand_rec.label}: no feature extracted, skipping")
             return None
 
         assign_abraham_hb_intensities(
@@ -102,7 +102,7 @@ def process_ligand(ligand_rec, max_sites=6):
         return topological_order(features, mol=ligand_rec.mol)
 
     except Exception as e:
-        warnings.warn(f"  {ligand_rec.label}: errore — {e}")
+        warnings.warn(f"  {ligand_rec.label}: error — {e}")
         return None
 
 
@@ -116,28 +116,29 @@ def run_pipeline(
     sasa_threshold=1.0,
     ligand_pdb=None,
     ligand_code=None,
-    ligand_max_sites=3
+    ligand_max_sites=3,
+    max_rows=None
 ):
     print(f"\n{'='*60}")
     print(f"  Pipeline Mapping: {os.path.basename(pdb_path)}")
     print(f"{'='*60}")
 
     # ── Step 1: lettura PDB ───────────────────────────────────────────────
-    print("\n[1/4] Lettura residui dal PDB...")
+    print("\n[1/4] Reading residues from PDB...")
     residues = load_residues_from_pdb(pdb_path, skip_water=True)
-    print(f"      {len(residues)} residui trovati")
+    print(f"      {len(residues)} residues found")
 
-    print("\n[2/4] Ordinamento per sequenza di catena (chain_id, res_seq)...")
+    print("\n[2/4] Ordering by chain sequence (chain_id, res_seq)...")
     centroid = compute_pocket_centroid(residues)
-    print(f"      Centroide tasca: ({centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}) Å")
-    print(f"      Ordine: " + " -> ".join(r.label for r in residues[:5]) + " -> ...")
+    print(f"      Pocket centroid: ({centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}) Å")
+    print(f"      Order: " + " -> ".join(r.label for r in residues[:5]) + " -> ...")
 
     sasa_map = None
     if surface_filter:
-        print("\n[!] Calcolo mappa SASA per il filtro di superficie...")
+        print("\n[!] Computing SASA map for the surface filter...")
         sasa_map = compute_atom_sasa(pdb_path)
 
-    print(f"\n[3/4] Pipeline locale per ogni residuo (reticolo indipendente)...")
+    print(f"\n[3/4] Local pipeline for each residue (independent lattice)...")
 
     flat_chain = []          # final flat sequence: list of dicts
     per_residue = []         # for visualization and debugging
@@ -152,7 +153,7 @@ def run_pipeline(
         if sites is None:
             continue
 
-        print(f"      {rec.label:20s} -> {len(sites)} siti: "
+        print(f"      {rec.label:20s} -> {len(sites)} site{'' if len(sites) == 1 else 's'}: "
               + "  ".join(s.feature_type[:3] for s in sites))
 
         for s in sites:
@@ -168,14 +169,17 @@ def run_pipeline(
 
         per_residue.append({"record": rec, "sites": sites})
 
-    print(f"\n[4/4] Sequenza flat finale")
+    print(f"\n[4/4] Final flat sequence")
     print(f"{'-'*60}")
-    print(f"  Residui processati : {len(per_residue)}")
-    print(f"  Siti totali        : {len(flat_chain)}")
-    print(f"\n  idx  {'Residuo':20s}  Tipo                 Intensity")
+    print(f"  Residues processed : {len(per_residue)}")
+    print(f"  Total sites        : {len(flat_chain)}")
+    print(f"\n  idx  {'Residue':20s}  Type                 Intensity")
     print(f"  {'-'*4}  {'-'*20}  {'-'*15}  {'-'*9}")
-    for idx, s in enumerate(flat_chain):
+    shown_sites = flat_chain if max_rows is None else flat_chain[:max_rows]
+    for idx, s in enumerate(shown_sites):
         print(f"  {idx+1:4d}  {s['residue']:20s}  {s['type']:15s}  {s['intensity']:.3f}")
+    if len(shown_sites) < len(flat_chain):
+        print(f"  {'...':4s}  ({len(flat_chain) - len(shown_sites)} rows omitted, --max-rows)")
 
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -192,13 +196,13 @@ def run_pipeline(
         json_path = os.path.join(output_dir, "pocket_chain.json")
         with open(json_path, "w") as f:
             json.dump(result, f, indent=2)
-        print(f"\n  JSON salvato in: {json_path}")
+        print(f"\n  JSON saved to: {json_path}")
 
         # CSV
         df = pd.DataFrame(flat_chain)
         csv_path = os.path.join(output_dir, "pocket_chain.csv")
         df.to_csv(csv_path, index=True, index_label="site_idx")
-        print(f"  CSV salvato in:  {csv_path}")
+        print(f"  CSV saved to:  {csv_path}")
 
     if plot or save_plot:
         _plot_sequence(per_residue, flat_chain, pdb_path, save_plot)
@@ -230,7 +234,7 @@ def run_pipeline(
         h_min=h_min, h_max=h_max, hb_min=hb_min, hb_max=hb_max
     )
 
-    print_qubit_chain(segments)
+    print_qubit_chain(segments, max_rows=max_rows)
 
     if output_dir:
         qubit_data = {
@@ -251,7 +255,7 @@ def run_pipeline(
         qjson_path = os.path.join(output_dir, "quantum_chain.json")
         with open(qjson_path, "w") as f:
             json.dump(qubit_data, f, indent=2)
-        print(f"\n  Quantum JSON salvato in: {qjson_path}")
+        print(f"\n  Quantum JSON saved to: {qjson_path}")
 
     grover_candidates = None
     if ligand_pdb is not None:
@@ -259,7 +263,7 @@ def run_pipeline(
         from qmode.grover import search_docking_sites, evaluate_candidates
 
         print(f"\n{'-'*60}")
-        print(f"  Estrazione ligando da: {os.path.basename(ligand_pdb)}")
+        print(f"  Ligand extracted from: {os.path.basename(ligand_pdb)}")
         print(f"{'-'*60}")
 
         # On benchmark structures the largest HETATM group is often a cofactor
@@ -269,23 +273,23 @@ def run_pipeline(
             pdb_id = os.path.splitext(os.path.basename(ligand_pdb))[0].lower()
             ligand_code = LIGAND_CODES.get(pdb_id)
             if ligand_code is not None:
-                print(f"  Codice ligando dal benchmark ({pdb_id}): {ligand_code}")
+                print(f"  Ligand code from benchmark ({pdb_id}): {ligand_code}")
 
         ligand_rec = load_ligand_from_pdb(ligand_pdb, ligand_code=ligand_code)
         if ligand_rec is None:
-            print("  Nessun gruppo HETATM valido trovato come ligando (o troppo piccolo).")
+            print("  No valid HETATM group found as ligand (or too small).")
         else:
-            print(f"  Ligando: {ligand_rec.label}")
+            print(f"  Ligand: {ligand_rec.label}")
             ligand_sites = process_ligand(ligand_rec, max_sites=ligand_max_sites)
             if not ligand_sites:
-                print(f"  {ligand_rec.label}: nessun sito farmacoforo estratto, Grover saltato.")
+                print(f"  {ligand_rec.label}: no pharmacophore site extracted, Grover skipped.")
             else:
                 ligand_hbs = [get_h_hb_intensities({"type": s.feature_type, "intensity": s.intensity})
                               for s in ligand_sites]
                 grover_ligand_size = len(ligand_hbs)
                 h_thr, hb_thr = compute_h_hb_thresholds(flat_chain, h_min, h_max, hb_min, hb_max)
 
-                print(f"  {len(ligand_hbs)} siti farmacoforo estratti dal ligando")
+                print(f"  {len(ligand_hbs)} pharmacophore sites extracted from the ligand")
                 print(f"\n  Grover Search  (ligand_size = {grover_ligand_size})")
                 print(f"  h_thr: {h_thr:.3f}, hb_thr: {hb_thr:.3f}")
 
@@ -294,7 +298,7 @@ def run_pipeline(
                 )
 
                 if grover_candidates:
-                    print(f"\n  {'Shift':6s}  {'Sito':6s}  {'Prob.':8s}  {'Soglia':8s}  {'Score':7s}  Residui")
+                    print(f"\n  {'Shift':6s}  {'Site':6s}  {'Prob.':8s}  {'Thresh.':8s}  {'Score':7s}  Residues")
                     print(f"  {'-'*6}  {'-'*6}  {'-'*8}  {'-'*8}  {'-'*7}  {'-'*20}")
                     for c in grover_candidates:
                         print(f"  {c['shift_offset']:6d}  {c['window_start_index']:6d}  "
@@ -310,16 +314,16 @@ def run_pipeline(
                         grover_candidates, flat_chain, ligand_centroids, grover_ligand_size
                     )
                     n_copies = len(ligand_centroids)
-                    print(f"\n  Validazione: distanza dalla copia più vicina del ligando reale "
-                          f"({ligand_rec.res_name}, {n_copies} copia/e nella struttura)")
-                    print(f"  {'Sito':6s}  {'Dist. (Å)':10s}  Residui")
+                    print(f"\n  Validation: distance to the nearest copy of the real ligand "
+                          f"({ligand_rec.res_name}, {n_copies} cop{'y' if n_copies == 1 else 'ies'} in the structure)")
+                    print(f"  {'Site':6s}  {'Dist. (Å)':10s}  Residues")
                     print(f"  {'-'*6}  {'-'*10}  {'-'*20}")
                     for c in grover_candidates:
                         mark = "   <- top-1" if c["window_start_index"] == top1_start else ""
                         print(f"  {c['window_start_index']:6d}  {c['distance_to_ligand_A']:10.3f}  "
                               f"{', '.join(c['residues'])}{mark}")
                 else:
-                    print("\n  Nessun sito candidato trovato per il ligando dato.")
+                    print("\n  No candidate site found for the given ligand.")
 
                 if output_dir:
                     gjson_path = os.path.join(output_dir, "grover_search.json")
@@ -330,7 +334,7 @@ def run_pipeline(
                             "ligand_size": grover_ligand_size,
                             "candidates": grover_candidates,
                         }, f, indent=2)
-                    print(f"\n  Grover search JSON salvato in: {gjson_path}")
+                    print(f"\n  Grover search JSON saved to: {gjson_path}")
 
     return flat_chain, per_residue, segments, grover_candidates
 
@@ -388,9 +392,9 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     ax2.set_ylim(-0.5, n_types + 0.5)
     ax2.set_yticks(range(n_types))
     ax2.set_yticklabels(FEAT_TYPES, fontsize=9)
-    ax2.set_xlabel("Indice sito nella sequenza flat", fontsize=10)
+    ax2.set_xlabel("Site index in the flat sequence", fontsize=10)
     ax2.set_title(
-        f"Sequenza flat dei siti — {fname}  ({n_sites} siti totali)",
+        f"Flat sequence of sites — {fname}  ({n_sites} sites total)",
         fontsize=12, fontweight="bold",
     )
     ax2.grid(axis="x", alpha=0.15)
@@ -399,7 +403,7 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     if save_path:
         p = save_path.replace(".png", "_sequence.png")
         fig2.savefig(p, dpi=150, bbox_inches="tight")
-        print(f"  Plot 1 (sequenza flat) salvato in: {p}")
+        print(f"  Plot 1 (flat sequence) saved to: {p}")
 
     from collections import Counter
     res_order = [e["record"].label for e in per_residue]
@@ -421,10 +425,10 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
         [r.split("_")[0] for r in res_order],
         rotation=60, ha="right", fontsize=8,
     )
-    ax3.set_ylabel("Numero di siti", fontsize=10)
+    ax3.set_ylabel("Number of sites", fontsize=10)
     ax3.set_title(
-        f"Composizione farmacofori per residuo — {fname}\n"
-        f"(ordinati per sequenza di catena)",
+        f"Pharmacophore composition per residue — {fname}\n"
+        f"(ordered by chain sequence)",
         fontsize=12, fontweight="bold",
     )
     ax3.legend(loc="upper right", fontsize=8, framealpha=0.9)
@@ -434,7 +438,7 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
     if save_path:
         p = save_path.replace(".png", "_composition.png")
         fig3.savefig(p, dpi=150, bbox_inches="tight")
-        print(f"  Plot 2 (composizione) salvato in: {p}")
+        print(f"  Plot 2 (composition) saved to: {p}")
 
     if not save_path:
         plt.show()
@@ -442,53 +446,59 @@ def _plot_sequence(per_residue, flat_chain, pdb_path, save_path=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Mappa la tasca PDB in una sequenza flat di siti sul reticolo"
+        description="Map a pocket PDB into a flat sequence of lattice sites"
     )
     parser.add_argument(
         "--no-surface-filter",
         dest="surface_filter",
         action="store_false",
         default=True,
-        help="Disattiva il filtro di accessibilità al solvente (SASA), attivo "
-             "di default. Con il filtro attivo si mantengono solo le feature "
-             "esposte verso la tasca.")
+        help="Disable the solvent-accessibility (SASA) filter, on by "
+             "default. With the filter on, only features exposed towards "
+             "the pocket are kept.")
 
     parser.add_argument(
         "--sasa-threshold",
         type=float,
         default=1.0,
-        help="Soglia SASA in Å² per considerare un atomo esposto (default: 1.0).")
+        help="SASA threshold in Å² for an atom to count as exposed (default: 1.0).")
 
     parser.add_argument("--pdb", required=True,
-                        help="File PDB della tasca (es. data/raw/1a08_pocket.pdb)")
+                        help="Pocket PDB file (e.g. data/raw/1a08_pocket.pdb)")
     parser.add_argument("--output", default=None,
-                        help="Directory dove salvare JSON e CSV")
+                        help="Directory to save JSON and CSV into")
     parser.add_argument("--plot", action="store_true",
-                        help="Mostra visualizzazione interattiva")
+                        help="Show the interactive visualization")
     parser.add_argument("--save-plot", default=None,
-                        help="Salva il plot come PNG")
+                        help="Save the plot as PNG")
     parser.add_argument("--ligand-size", type=int, default=3,
-                        help="Dimensione (in siti) delle finestre scorrevoli del "
-                             "vecchio step classico di quantum encoding (Step 7). "
-                             "Non ha a che fare col ligando reale usato da Grover, "
-                             "che deriva la propria dimensione da --ligand-pdb.")
+                        help="Size (in sites) of the sliding windows of the old "
+                             "classical quantum-encoding step (Step 7). Unrelated "
+                             "to the real ligand used by Grover, which derives its "
+                             "own size from --ligand-pdb.")
     parser.add_argument("--ligand-pdb", default=None,
-                        help="File PDB contenente il ligando (HETATM), es. la "
-                             "struttura completa scaricata da PDB. Se fornito, "
-                             "esegue la ricerca quantistica (Grover) dei siti di "
-                             "aggancio candidati con il ligando reale estratto.")
+                        help="PDB file containing the ligand (HETATM), e.g. the "
+                             "full structure downloaded from the PDB. If given, "
+                             "runs the quantum (Grover) search for candidate "
+                             "docking sites using the extracted real ligand.")
     parser.add_argument("--ligand-code", default=None,
-                        help="Codice a 3 lettere del ligando (es. MTX), per "
-                             "disambiguare quando --ligand-pdb contiene più "
-                             "gruppi HETATM non-acqua (es. ioni). Default: sceglie "
-                             "automaticamente il gruppo con più atomi pesanti.")
+                        help="3-letter ligand code (e.g. MTX), to disambiguate "
+                             "when --ligand-pdb holds several non-water HETATM "
+                             "groups (e.g. ions). Default: auto-picks the group "
+                             "with the most heavy atoms.")
     parser.add_argument("--ligand-max-sites", type=int, default=3,
-                        help="Numero massimo di siti farmacoforo del ligando "
-                             "usati da Grover (default 3, cioè fino a 6 qubit). "
-                             "Oltre ~5 siti (10+ qubit) la sintesi dell'oracolo/"
-                             "diffusione (UnitaryGate) di Qiskit diventa molto "
-                             "lenta (decine di secondi/minuti per shift) — "
-                             "alzare questo valore solo se disposti ad aspettare.")
+                        help="Maximum number of ligand pharmacophore sites used "
+                             "by Grover (default 3, i.e. up to 6 qubits). Beyond "
+                             "~5 sites (10+ qubits) Qiskit's oracle/diffusion "
+                             "synthesis (UnitaryGate) gets very slow (tens of "
+                             "seconds/minutes per shift) — raise it only if you "
+                             "are willing to wait.")
+
+    parser.add_argument("--max-rows", type=int, default=None,
+                        help="Truncate the two long tables (flat sequence and "
+                             "quantum encoding) to their first N rows; on a "
+                             "typical pocket each is over 120 rows. Meant for "
+                             "the live demo; default: print everything.")
 
     args = parser.parse_args()
 
@@ -502,5 +512,6 @@ if __name__ == "__main__":
         sasa_threshold=args.sasa_threshold,
         ligand_pdb=args.ligand_pdb,
         ligand_code=args.ligand_code,
-        ligand_max_sites=args.ligand_max_sites
+        ligand_max_sites=args.ligand_max_sites,
+        max_rows=args.max_rows
     )
