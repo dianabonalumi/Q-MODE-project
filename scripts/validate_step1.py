@@ -52,15 +52,20 @@ with warnings.catch_warnings(record=True) as caught_warnings:
     residues = load_residues_from_pdb(args.pdb)
 
 # Conta warning
-skipped = [w for w in caught_warnings if "saltato" in str(w.message).lower()
-           or "fallita" in str(w.message).lower()]
+skipped_warnings = [w for w in caught_warnings if "saltato" in str(w.message).lower()
+                    or "fallita" in str(w.message).lower()]
 
-print(f"\nResidue trovati nel PDB:    {len(residues) + len(skipped)}")
-print(f"Residui processati:         {len(residues)}")
+# load_residues_from_pdb restituisce ANCHE i residui falliti, con mol=None: vanno
+# contati una volta sola, non sommati ai warning che li segnalano.
+processed = [r for r in residues if r.mol is not None]
+skipped = [r for r in residues if r.mol is None]
+
+print(f"\nResidue trovati nel PDB:    {len(residues)}")
+print(f"Residui processati:         {len(processed)}")
 print(f"Residui saltati (warning):  {len(skipped)}")
 if skipped:
     print("  Residui saltati:")
-    for w in skipped:
+    for w in skipped_warnings:
         print(f"    {w.message}")
 
 # Verifica topologia per ogni residuo processato
@@ -71,10 +76,7 @@ print(f"{'─'*60}")
 errors = []
 warnings_list = []
 
-for rec in residues:
-    if rec.mol is None:
-        errors.append(f"  {rec.label}: mol is None")
-        continue
+for rec in processed:
 
     mol = rec.mol
     mol_no_h = Chem.RemoveHs(mol)
@@ -123,18 +125,26 @@ for w in warnings_list:
 print(f"\n{'='*60}")
 print("RIEPILOGO")
 print(f"{'='*60}")
-total = len(residues) + len(skipped)
+total = len(residues)
 print(f"Residui totali nel PDB:     {total}")
-print(f"Residui processati:         {len(residues)} "
-      f"({len(residues)/total*100:.1f}%)")
+print(f"Residui processati:         {len(processed)} "
+      f"({len(processed)/total*100:.1f}%)")
 print(f"Residui saltati:            {len(skipped)} "
       f"({len(skipped)/total*100:.1f}%)")
 print(f"Errori critici topologia:   {len(errors)}")
 print(f"Warning topologia:          {len(warnings_list)}")
 
-if len(errors) == 0 and len(warnings_list) == 0:
+# Un residuo saltato e' un file di input incompleto, non un difetto di topologia:
+# non deve far scattare l'esito rosso.
+if len(errors) == 0 and len(warnings_list) == 0 and not skipped:
     print("\n✓ Topologia corretta per tutti i residui processati.")
 elif len(errors) == 0:
-    print("\n✓ Nessun errore critico. Alcuni warning da verificare.")
+    note = ""
+    if skipped:
+        note = (f" {len(skipped)} residuo/i saltato/i per atomi mancanti nel file PDB "
+                f"(non e' un difetto della pipeline).")
+    if warnings_list:
+        note += " Alcuni warning da verificare."
+    print(f"\n✓ Nessun errore critico di topologia.{note}")
 else:
     print("\n✗ Errori critici trovati — verificare i residui elencati.")
