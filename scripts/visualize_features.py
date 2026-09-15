@@ -19,10 +19,11 @@ COLORS = {
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--pdb-pocket", required=True,
-                    help="PDB della tasca (per estrarre feature)")
+                    help="Pocket PDB (features are extracted from this)")
 parser.add_argument("--pdb-protein", required=True,
-                    help="PDB della proteina completa (per visualizzazione)")
-parser.add_argument("--sasa-threshold", type=float, default=0.5)
+                    help="Full-protein PDB (used as visual context)")
+parser.add_argument("--sasa-threshold", type=float, default=1.0,
+                    help="SASA threshold (A^2) for solvent exposure (same as run_pipeline.py).")
 parser.add_argument("--output", default="features_visualization.html")
 args = parser.parse_args()
 
@@ -117,22 +118,31 @@ html = f"""<!DOCTYPE html>
     var pocketStr  = {repr(pocket_str)};
 
     var viewer1 = $3Dmol.createViewer("viewer1", {{backgroundColor:"white"}});
-    viewer1.addModel(proteinStr, "pdb");
+    var protein1 = viewer1.addModel(proteinStr, "pdb");
     viewer1.setStyle({{}}, {{surface:{{opacity:0.3, color:"#4a90d9"}}}});
     viewer1.addModel(pocketStr, "pdb");
     viewer1.setStyle({{}}, {{cartoon:{{color:"#2c5f8a", opacity:0.7}}}});
     {spheres_all}
-    viewer1.zoomTo();
+    viewer1.zoomTo({{model: protein1}});
     viewer1.render();
 
     var viewer2 = $3Dmol.createViewer("viewer2", {{backgroundColor:"white"}});
-    viewer2.addModel(proteinStr, "pdb");
+    var protein2 = viewer2.addModel(proteinStr, "pdb");
     viewer2.setStyle({{}}, {{surface:{{opacity:0.15, color:"#4a90d9"}}}});
     viewer2.addModel(pocketStr, "pdb");
     viewer2.setStyle({{}}, {{cartoon:{{color:"#2c5f8a", opacity:0.7}}}});
     {spheres_filtered}
-    viewer2.zoomTo();
+    viewer2.zoomTo({{model: protein2}});
     viewer2.render();
+
+    // 3Dmol sizes its canvas when the viewer is created, before the layout
+    // has settled: without a resize on load the molecule is clipped.
+    function fit() {{
+      viewer1.resize(); viewer1.zoomTo({{model: protein1}}); viewer1.render();
+      viewer2.resize(); viewer2.zoomTo({{model: protein2}}); viewer2.render();
+    }}
+    window.addEventListener("load", fit);
+    window.addEventListener("resize", fit);
   </script>
 </body>
 </html>"""

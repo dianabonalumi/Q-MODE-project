@@ -1,7 +1,7 @@
 """
-Visualizza la flat chain 3D per uno o più residui o per tutta la proteina.
-Con --residue mostra solo un residuo, con --residues mostra più residui,
-mantenendo sempre l'indice globale nella flat chain completa.
+Visualize the 3D flat chain for one or more residues, or for the whole protein.
+--residue shows a single residue, --residues shows several, always keeping the
+global index within the full flat chain.
 """
 import argparse
 import sys
@@ -27,12 +27,13 @@ COLORS = {
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--pdb", required=True)
-parser.add_argument("--sasa-threshold", type=float, default=0.5)
+parser.add_argument("--sasa-threshold", type=float, default=1.0,
+                    help="SASA threshold (A^2) for solvent exposure (same as run_pipeline.py).")
 parser.add_argument("--output", default="chain_visualization.html")
 parser.add_argument("--residue", default=None,
-                    help="Mostra solo questo residuo es. A159_ARG")
+                    help="Show only this residue, e.g. A159_ARG")
 parser.add_argument("--residues", nargs="+", default=None,
-                    help="Mostra più residui es. A158_ARG A159_ARG A160_GLU")
+                    help="Show several residues, e.g. A158_ARG A159_ARG A160_GLU")
 args = parser.parse_args()
 
 # Calcola SASA
@@ -92,10 +93,10 @@ flat_chain = [
     if not selected or s["residue"] in selected
 ]
 
-print(f"Totale siti nella catena completa: {len(full_chain)}")
-print(f"Siti selezionati:                  {len(flat_chain)}")
+print(f"Total sites in the full chain: {len(full_chain)}")
+print(f"Sites shown:                   {len(flat_chain)}")
 for s in flat_chain:
-    print(f"  Posizione {s['global_idx']:3d} — {s['type']:20s} "
+    print(f"  Position {s['global_idx']:3d} — {s['type']:20s} "
           f"({s['x']:.1f}, {s['y']:.1f}, {s['z']:.1f})")
 
 # Legge la proteina per il contesto 3D
@@ -159,9 +160,9 @@ for site in flat_chain:
 if args.residues:
     title = " — ".join(args.residues)
 elif args.residue:
-    title = f"Residuo {args.residue}"
+    title = f"Residue {args.residue}"
 else:
-    title = "Flat Chain — proteina completa"
+    title = f"Flat Chain — {os.path.basename(args.pdb)}"
 
 html = f"""<!DOCTYPE html>
 <html>
@@ -177,7 +178,7 @@ html = f"""<!DOCTYPE html>
                border-radius: 6px; margin-bottom: 8px;
                box-shadow: 0 1px 4px rgba(0,0,0,0.1); }}
     .main {{ display: flex; gap: 12px; height: 580px; }}
-    #viewer {{ flex: 1; border: 1px solid #ccc; border-radius: 6px;
+    #viewer {{ flex: 1; position: relative; border: 1px solid #ccc; border-radius: 6px;
                box-shadow: 0 2px 8px rgba(0,0,0,0.12); }}
     .table-panel {{ width: 360px; overflow-y: auto; background: white;
                     border: 1px solid #ccc; border-radius: 6px;
@@ -195,10 +196,10 @@ html = f"""<!DOCTYPE html>
   <h2>Pharmacophore Sites — {title}</h2>
   <div class="legend">{legend_html}</div>
   <div class="stats">
-    {len(flat_chain)} siti selezionati &mdash;
-    catena completa: {len(full_chain)} siti totali &mdash;
-    linee spesse = stesso residuo &mdash;
-    linee sottili = cambio residuo
+    {len(flat_chain)} sites shown &mdash;
+    full chain: {len(full_chain)} sites &mdash;
+    thick lines = same residue &mdash;
+    thin lines = residue change
   </div>
   <div class="main">
     <div id="viewer"></div>
@@ -207,8 +208,8 @@ html = f"""<!DOCTYPE html>
         <thead>
           <tr>
             <th>Pos.</th>
-            <th>Tipo farmacoforo</th>
-            <th>Coords 3D</th>
+            <th>Pharmacophore type</th>
+            <th>3D coords</th>
           </tr>
         </thead>
         <tbody>{table_rows}</tbody>
@@ -226,6 +227,11 @@ html = f"""<!DOCTYPE html>
     {chain_js}
     viewer.zoomTo();
     viewer.render();
+    // 3Dmol sizes its canvas when the viewer is created, before the flex
+    // layout has settled: without a resize on load the molecule is clipped.
+    function fit() {{ viewer.resize(); viewer.zoomTo(); viewer.render(); }}
+    window.addEventListener("load", fit);
+    window.addEventListener("resize", fit);
   </script>
 </body>
 </html>"""
