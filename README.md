@@ -547,3 +547,4 @@ with or without their pairwise distances. What distinguishes a pocket is the cav
 in a cavity, so it keeps every exposed site on the protein surface and has no way to
 prefer the concave ones. Replacing it with a cavity detector (fpocket, CASTp) is the
 change that would have to come before any further work on the quantum ranking.
+
