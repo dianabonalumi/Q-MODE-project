@@ -1,34 +1,81 @@
 # Q-MODE: Amino Acid Lattice Mapping for Binding Pocket Representation
 
-> A pipeline for translating protein binding pockets into discrete 2D lattice interaction chains, then encoding them as qubit-ready quantum states.
+> A pipeline that turns a protein binding pocket into an ordered 1D chain of pharmacophoric
+> interaction sites, then encodes that chain as qubit-ready quantum states and searches it
+> with a modified Grover algorithm.
 
 ---
 
 ## Overview
 
-Q-MODE takes a protein binding pocket, supplied as a `.pdb` file, and turns it into a structured, spatially-consistent sequence of pharmacophoric interaction sites on a 2D integer lattice. Each site carries a pharmacophore type (hydrophobic, aromatic, H-bond donor/acceptor, ionizable, ...) and an intensity derived from real geometry, not placeholder values.
+Q-MODE takes a protein binding pocket, supplied as a `.pdb` file, and turns it into a
+discrete, ordered sequence of pharmacophoric interaction sites — a flat 1D chain,
+analogous to a sequence of residues. Each site carries a pharmacophore type (hydrophobic,
+aromatic, H-bond donor/acceptor, ionizable) and an intensity derived from real geometry
+and measured physical scales, not placeholder values.
 
-On top of the lattice chain, the pipeline implements a **quantum encoding stage**, inspired by *"Quantum algorithm for protein-ligand docking sites identification in the interaction space"*, which converts sliding-window segments of the chain into qubit-ready binary states (first encoding) and probability amplitudes (second encoding), so the pocket representation can feed into Grover-search-style or amplitude-based quantum docking algorithms.
+On top of the flat chain, the pipeline implements a **quantum encoding stage**, following
+*"Quantum algorithm for protein-ligand docking sites identification in the interaction
+space"*, which converts sliding-window segments of the chain into qubit-ready binary
+states (first encoding) and probability amplitudes (second encoding), and a **modified
+Grover search** that scans the chain for windows matching a ligand's own encoded profile.
 
-Typical downstream uses: docking-score prediction, pocket similarity search, and quantum-inspired optimization models.
+**The end-to-end result is negative.** The search does not localize the binding site: over
+29 crystallographic complexes the windows it returns are no closer to the true ligand than
+windows drawn at random from the same pocket. The cause is the descriptor, not the quantum
+stage — see [Benchmark Results](#benchmark-results) below and `report/Q-MODE_Report.pdf`
+for the full analysis.
 
 ---
 
 ## Pipeline Stages
 
-1. **Residue extraction** — parse residues and real 3D coordinates directly from PDB atoms; bond orders assigned by structural comparison against a known template, not by positional overlay (`pdb_reader.py`).
-2. **Pharmacophoric feature computation** — RDKit-based atom feature extraction (`feature_extraction.py`).
-3. **Intensity assignment** — every site gets an intrinsic h/hb value: hydrophobic sites use Crippen atomic LogP contributions (`feature_extraction.py`); H-bond donor/acceptor/ionizable sites use Abraham solute descriptors, looked up by functional group and real PDB atom name (`abraham_hbond.py`).
-4. **Surface filter** (on by default) — keeps only solvent-exposed sites via SASA (`surface_filter.py`).
-5. **Topological ordering** — within each residue, sites are ordered by a BFS over the covalent bond graph starting from the backbone N atom (`site_selection.py`).
-6. **Chain assembly** — residues are concatenated in protein-chain order (`chain_id`, `res_seq`); each residue's sites inherit that position plus their own topological order, producing one flat, chain-consistent sequence.
-7. **Quantum encoding** — splits the flat chain into ligand-sized sliding-window segments and applies:
-   - **First encoding**: binarizes h/hb intensity into 2-bit qubit basis states for Grover search.
-   - **Second encoding**: computes probability amplitudes `(a, b, c, d)` for amplitude-based distance calculations.
+The eleven stages below are the same ones numbered in Section 2 of the report.
+
+1. **Residue extraction** — parse residues and real 3D coordinates directly from PDB atoms;
+   bond orders assigned by matching each residue against a canonical SMILES template
+   (`pdb_reader.py`).
+2. **Pharmacophoric feature extraction** — RDKit feature factory over `BaseFeatures.fdef`,
+   six interaction families, each feature placed at the centroid of its constituent atoms
+   (`feature_extraction.py`).
+3. **Intensity assignment** — hydrophobic sites use Crippen atomic LogP contributions
+   (`feature_extraction.py`); H-bond donor/acceptor/ionizable sites use Abraham solute
+   descriptors, looked up by residue and PDB atom name (`abraham_hbond.py`).
+4. **Surface filtering** (on by default) — keeps only solvent-exposed sites via SASA,
+   computed on the ligand-free structure (`surface_filter.py`).
+5. **Site deduplication** — same-type features within 1.5 Å are merged into a single site
+   at the group centroid, intensities summed (`site_dedup_centroid.py`).
+6. **Topological ordering** — within each residue, sites are ordered by a BFS over the
+   covalent bond graph, backbone first, then the side chain outward (`site_selection.py`).
+7. **Chain assembly** — residues are concatenated in protein-chain order
+   (`chain_id`, `res_seq`), producing one flat, chain-consistent sequence.
+8. **Quantum encoding** — splits the flat chain into ligand-sized sliding windows and
+   applies:
+   - **First encoding**: binarizes the h/hb intensities into 2-bit basis states per site,
+     for Grover search.
+   - **Second encoding**: computes probability amplitudes `(a, b, c, d)` per site, for
+     amplitude-based distance estimation.
+
    (`quantum_encoding.py`, `qubit_chain.py`)
-8. **Ligand extraction** (optional, via `--ligand-pdb`) — reads the ligand's HETATM group from a PDB file (auto-picks the largest non-water, non-standard-amino-acid group, or a specific one via `--ligand-code`) and assigns its bond orders from the PDB Chemical Component Dictionary (`qmode/ligand_reader.py`), falling back to geometric bond-order perception (`rdDetermineBonds`) if the ligand has no CCD entry or the network is unavailable. The ligand then goes through the same feature-extraction/dedup/ordering steps as protein residues.
-9. **Grover search** (optional, via `--ligand-pdb`) — tiles the protein into non-overlapping ligand-sized windows for each shift offset, builds the protein superposition state over the unique first-encoding basis states, and runs the modified Grover oracle + diffusion operator on a Qiskit simulator to identify which windows match the extracted ligand's (h, hb) profile above the `1/N` threshold (`qmode/grover/search.py`). When several windows collapse onto the same first-encoding bitstring, the one with the highest aggregate h/hb intensity ("most interactive") is kept, and matching candidates are ranked by that same score.
-10. **Distance validation** (optional, requires `--ligand-pdb`) — a classical stand-in for the paper's SWAP-test-based ranking: each Grover candidate's site centroid is compared, by Euclidean distance, to the real ligand's heavy-atom centroid, giving a ground-truth accuracy check per candidate (`qmode/grover/evaluate.py`). Only meaningful in benchmark mode, where the true ligand pose is known.
+9. **Ligand extraction** (optional, via `--ligand-pdb`) — reads the ligand's HETATM group
+   from a PDB file (auto-picks the largest non-water, non-standard-amino-acid group, or a
+   specific one via `--ligand-code`) and assigns its bond orders from the PDB Chemical
+   Component Dictionary, falling back to geometric perception (`rdDetermineBonds`) if the
+   ligand has no CCD entry or the network is unavailable. The ligand then goes through the
+   same feature-extraction/intensity/dedup/ordering steps as a protein residue
+   (`ligand_reader.py`).
+10. **Grover search** (optional, via `--ligand-pdb`) — tiles the flat chain into
+    non-overlapping ligand-sized windows for each shift offset, builds the superposition
+    over the unique first-encoding basis states, and runs the oracle + diffusion operator
+    on a Qiskit simulator to identify which windows match the ligand's `(h, hb)` profile
+    above the `1/N` threshold. When several windows collapse onto the same bitstring, the
+    one with the highest aggregate h/hb intensity is kept, and matching candidates are
+    ranked by that same score (`qmode/grover/search.py`).
+11. **Distance-to-ligand validation** (optional, requires `--ligand-pdb`) — a classical
+    stand-in for the paper's SWAP-test-based ranking: each candidate's site centroid is
+    compared, by Euclidean distance, to the real ligand's heavy-atom centroid
+    (`qmode/grover/evaluate.py`). Only meaningful in benchmark mode, where the true ligand
+    pose is known.
 
 ---
 
@@ -39,35 +86,38 @@ Q-MODE-project/
 ├── qmode/
 │   ├── pdb_reader.py           # PDB parsing → residues with real 3D coordinates
 │   ├── ligand_reader.py        # Ligand HETATM parsing → mol via PDB CCD template (or geometric fallback)
-│   ├── feature_extraction.py   # RDKit-based pharmacophore feature extraction + Crippen h
-│   ├── abraham_hbond.py        # Abraham hb intensity lookup by functional group
-│   ├── surface_filter.py       # SASA-based solvent-exposure filter
-│   ├── site_selection.py       # Topological (BFS) site ordering
+│   ├── feature_extraction.py   # RDKit pharmacophore feature extraction + Crippen h
+│   ├── abraham_hbond.py        # Abraham hb intensity lookup
+│   ├── surface_filter.py       # SASA-based solvent-exposure filter (Shrake & Rupley)
 │   ├── site_dedup_centroid.py  # Merges near-duplicate same-type sites into one centroid site
+│   ├── site_selection.py       # Topological (BFS) site ordering
 │   ├── quantum_encoding.py     # First/second quantum encoding (Grover / amplitude)
 │   ├── qubit_chain.py          # Sliding-window segmentation + qubit chain assembly
-│   ├── grover/                 # Modified Grover search (oracle + diffusion + shift)
-│   │   ├── __init__.py         # Re-exports the public search API
-│   │   ├── search.py           # tile_offset, oracle/diffusion, circuit execution, search_docking_sites
-│   │   └── evaluate.py         # Distance-to-ligand validation of candidate windows
-│   ├── lattice_fitting.py      # 3D → 2D projection (PCA) — utility, not used by the main pipeline
-│   ├── snapping.py             # 2D coords → integer lattice nodes — utility, not used by the main pipeline
-│   └── labeling.py             # One-hot pharmacophore labeling — utility, not used by the main pipeline
+│   └── grover/                 # Modified Grover search
+│       ├── __init__.py         # Re-exports the public search API
+│       ├── search.py           # tile_offset, oracle/diffusion, circuit execution, search_docking_sites
+│       └── evaluate.py         # Distance-to-ligand validation of candidate windows
 ├── scripts/
 │   ├── run_pipeline.py         # Main CLI entry point (whole protein or cropped pocket PDB)
+│   ├── make_pockets.py         # Downloads the benchmark PDB structures and crops binding pockets
 │   ├── plot_residue_chain.py   # 3D structure + 1D chain visualization for a single residue
 │   ├── visualize_features.py   # Interactive 3D page: pharmacophore sites before/after the SASA filter
 │   ├── visualize_chain.py      # Interactive 3D page: the flat chain, plus the site table
-│   ├── percentile_eval.py      # Benchmark table: ceiling / chance / top-1 percentile per target
+│   ├── percentile_eval.py      # Benchmark tables: ceiling / chance / top-1 percentile, k sweep
+│   ├── diagnose_descriptor.py  # Spearman rho: amplitude-space similarity vs true 3D distance
+│   ├── fast_eval.py            # Benchmark driver over the 29 evaluated pockets
 │   ├── make_demo_figure.py     # Closing figure of the demo, built from the percentile table
-│   └── make_pockets.py         # Downloads sample PDB structures and crops binding pockets
+│   └── validate_step1.py … validate_step5.py
+│                               # Per-stage validation: template matching, type coverage,
+│                               # intensity ranges, deduplication, BFS determinism
 ├── data/
-│   └── raw/                    # Input / generated pocket PDB files
+│   ├── raw/                    # Pocket PDB files (tracked) + full structures (gitignored)
+│   └── processed/              # JSON/CSV pipeline outputs (gitignored)
 ├── tests/                      # Unit tests
 ├── report/
+│   ├── Q-MODE_Report.pdf       # Project report
 │   ├── demo_runbook.md         # Step-by-step script for the live demo
 │   └── figures/                # Generated figures (PNGs are gitignored)
-├── Report/                     # Project report (PDF)
 ├── requirements.txt
 └── setup.py
 ```
@@ -99,10 +149,13 @@ pip install -e .
 | `rdkit` | 2023.3.1 |
 | `numpy` | 1.24 |
 | `pandas` | 2.0 |
-| `scikit-learn` | 1.3 |
-| `scipy` | 1.11 |
 | `matplotlib` | 3.7 |
-| `tqdm` | 4.65 |
+| `biopython` | 1.79 |
+| `qiskit` | 2.2 |
+| `qiskit-aer` | 0.17 |
+
+`biopython` provides the Shrake & Rupley SASA implementation; `qiskit` and `qiskit-aer`
+run the Grover circuit. The same list is in `requirements.txt` and `setup.py`.
 
 ---
 
@@ -110,33 +163,43 @@ pip install -e .
 
 ### 1. Get a pocket to work with
 
-Either drop your own pocket PDB file into `data/raw/`, or generate sample pockets from real PDB structures (trypsin, HIV-1 protease, DHFR, streptavidin) by cropping around their bound ligand:
+The cropped pockets are tracked in `data/raw/` (31 of them). The full structures they came
+from are **not** — they are regenerable, so they are gitignored. To fetch them, and to
+regenerate the pockets from scratch:
 
 ```bash
 python scripts/make_pockets.py
 ```
 
+This downloads each structure from RCSB (**network required**) and crops, for each, the
+protein residues with at least one atom within 5 Å of a ligand atom. The set is four
+hand-picked complexes — trypsin, HIV-1 protease, DHFR, streptavidin — plus the Astex
+Diverse Set (Hartshorn et al.).
+
+Pocket files are lowercase (`1hsg_pocket.pdb`), full structures uppercase (`1HSG.pdb`).
+
 ### 2. Run the pipeline on a pocket
 
 ```bash
-python scripts/run_pipeline.py --pdb data/raw/3PTB_pocket.pdb --plot
+python scripts/run_pipeline.py --pdb data/raw/3ptb_pocket.pdb --plot
 ```
 
 ```bash
 # Save JSON/CSV outputs and static plot images
-python scripts/run_pipeline.py --pdb data/raw/3PTB_pocket.pdb \
+python scripts/run_pipeline.py --pdb data/raw/3ptb_pocket.pdb \
     --output data/processed/ \
     --save-plot data/processed/pocket.png
 ```
 
 ```bash
 # Run Grover search against a real ligand extracted from a full PDB structure
+# (needs data/raw/4DFR.pdb — run make_pockets.py first)
 python scripts/run_pipeline.py --pdb data/raw/4dfr_pocket.pdb --ligand-pdb data/raw/4DFR.pdb
 ```
 
 ```bash
 # Visualize a single residue: 3D structure + its 1D site chain
-python scripts/plot_residue_chain.py --pdb data/raw/3PTB_pocket.pdb --chain A --resseq 189
+python scripts/plot_residue_chain.py --pdb data/raw/3ptb_pocket.pdb --chain A --resseq 189
 ```
 
 ### Command-line Options (`run_pipeline.py`)
@@ -149,7 +212,7 @@ python scripts/plot_residue_chain.py --pdb data/raw/3PTB_pocket.pdb --chain A --
 | `--save-plot` | `None` | Save plots as PNG images |
 | `--no-surface-filter` | *(filter on by default)* | Disable the SASA solvent-exposure filter (keep buried sites too) |
 | `--sasa-threshold` | `1.0` | SASA threshold (Å²) for considering an atom solvent-exposed |
-| `--ligand-size` | `3` | Sliding-window size (in sites) used for the classical quantum-chain segmentation (Step 7) — unrelated to the real ligand used by Grover |
+| `--ligand-size` | `3` | Sliding-window size (in sites) used for the classical quantum-chain segmentation (Stage 8) — unrelated to the real ligand used by Grover |
 | `--ligand-pdb` | `None` | Path to a PDB file containing the ligand's HETATM records (e.g. the full structure downloaded from PDB). When set, runs Grover search with the extracted ligand |
 | `--ligand-code` | `None` | 3-letter ligand code to disambiguate when `--ligand-pdb` has multiple non-water HETATM groups. Default: auto-picks the group with the most heavy atoms |
 | `--ligand-max-sites` | `3` | Max number of ligand pharmacophore sites used by Grover (6 qubits). Raising this past ~5 sites (10+ qubits) makes oracle/diffusion synthesis very slow in Qiskit |
@@ -161,8 +224,9 @@ python scripts/plot_residue_chain.py --pdb data/raw/3PTB_pocket.pdb --chain A --
 
 A four-minute walkthrough on **1HSG** (HIV-1 protease bound to the inhibitor MK1) that
 takes a pocket from PDB file to Grover candidates. The computation itself takes about six
-seconds, runs entirely offline, and needs no quantum hardware — Grover runs on the Qiskit
-simulator.
+seconds and needs no quantum hardware — Grover runs on the Qiskit simulator. The
+*computation* is offline; the *setup* below downloads from RCSB, so do it before you need
+it, not in front of the audience.
 
 `report/demo_runbook.md` is the full script: what to say at each step, the numbers to have
 ready, and the fallback if the projector misbehaves. The short version follows.
@@ -170,7 +234,8 @@ ready, and the fallback if the projector misbehaves. The short version follows.
 ### Setup
 
 The demo needs both the cropped pocket and the full structure it came from. The full
-structures are gitignored (they are regenerable), so fetch them first:
+structures are gitignored (they are regenerable), so fetch them first — **this step needs
+network access**:
 
 ```bash
 python scripts/make_pockets.py
@@ -252,11 +317,11 @@ but cannot run Grover.
 
 ## Output Format
 
-**`pocket_chain.json`** — full flat lattice chain with per-site metadata:
+**`pocket_chain.json`** — the full flat chain with per-site metadata:
 
 ```json
 {
-  "pdb": "3PTB_pocket.pdb",
+  "pdb": "3ptb_pocket.pdb",
   "pocket_centroid": [12.4, 8.1, -3.2],
   "n_residues": 18,
   "n_sites_total": 41,
@@ -324,17 +389,34 @@ pytest tests/
 
 ## Scientific Background
 
-The quantum-encoding stage follows the two-step scheme from *"Quantum algorithm for protein-ligand docking sites identification in the interaction space"*: a **first encoding** that binarizes hydrophobicity/H-bond intensity into qubit basis states for Grover search, and a **second encoding** that computes probability amplitudes for amplitude-based Euclidean distance estimation. See `Report/Q-MODE_Report_EN.pdf` for the full derivation and results.
+The quantum-encoding stage follows the two-step scheme from *"Quantum algorithm for
+protein-ligand docking sites identification in the interaction space"*: a **first
+encoding** that binarizes hydrophobicity/H-bond intensity into qubit basis states for
+Grover search, and a **second encoding** that computes probability amplitudes for
+amplitude-based Euclidean distance estimation. See `report/Q-MODE_Report.pdf` for the full
+derivation and results.
 
-The Grover search itself (`qmode/grover/`) is implemented and unit-tested: protein superposition state, oracle, and diffusion operator (Eqs. 5-8 of the paper), run per shift offset on a Qiskit simulator. It is wired into `run_pipeline.py` via `--ligand-pdb`, with the ligand's own (h, hb) profile extracted from a real PDB (`qmode/ligand_reader.py`) rather than hand-typed values.
+The Grover search itself (`qmode/grover/`) is implemented and unit-tested: protein
+superposition state, oracle, and diffusion operator, run per shift offset on a Qiskit
+simulator. It is wired into `run_pipeline.py` via `--ligand-pdb`, with the ligand's own
+`(h, hb)` profile extracted from a real PDB (`qmode/ligand_reader.py`) rather than
+hand-typed values.
 
-Two known limitations: the ligand's H-bond intensity has no Abraham data (the table is indexed by amino-acid residue/atom name), so it stays at the neutral default — same open question as the protein-side Abraham assumptions above. And Qiskit's `UnitaryGate` synthesis for the oracle/diffusion operators doesn't scale past ~10 qubits (tens of seconds to minutes per shift offset), which is why `--ligand-max-sites` defaults to 3 (6 qubits).
+Two known limitations of the implementation. The Abraham intensity table is indexed by
+residue and PDB atom name, so it covers protein residues by construction and not ligand
+atoms; the heuristic fallback recognises only four functional groups, and anything outside
+them stays at the neutral default. And Qiskit's `UnitaryGate` synthesis for the
+oracle/diffusion operators does not scale past ~10 qubits (tens of seconds to minutes per
+shift offset), which is why `--ligand-max-sites` defaults to 3 (6 qubits).
 
-Not yet implemented: the paper's own SWAP-test-based (amplitude/quantum) ranking of candidate docking sites. `qmode/grover/evaluate.py` covers the same evaluation *goal* — ranking candidates by distance to the ligand — with a classical Euclidean distance between each candidate's site centroid and the ligand's real heavy-atom centroid, rather than a quantum SWAP test on the second encoding's amplitudes. It only applies in benchmark mode (`--ligand-pdb` with a known bound ligand), not prospective screening.
-
-Not yet implemented, and **currently not worth implementing**: the paper's own SWAP-test-based ranking of candidate docking sites. A classical stand-in for it was measured on the benchmark set and carries no localization signal — see [Benchmark Results](#benchmark-results) below.
-
-
+**Not implemented, and on the evidence below not worth implementing as it stands:** the
+paper's own SWAP-test-based ranking of candidate docking sites. `qmode/grover/evaluate.py`
+covers the same evaluation *goal* — ranking candidates by distance to the ligand — with a
+classical Euclidean distance between each candidate's site centroid and the ligand's real
+heavy-atom centroid, rather than a quantum SWAP test on the second encoding's amplitudes.
+A classical stand-in for the amplitude ranking was measured on the benchmark set and
+carries no localization signal; see below. It only applies in benchmark mode
+(`--ligand-pdb` with a known bound ligand), not prospective screening.
 
 ---
 
@@ -427,12 +509,17 @@ Zero. A window's `(h, hb)` profile carries no information about where the ligand
 The encoding is also badly degenerate. Across the 29 benchmark ligands, the 6-qubit first
 encoding takes only **9 distinct values out of 64 possible**, and a single state,
 `|010101⟩`, covers 11 of them — MK1 (an HIV protease inhibitor) and FSN (a thrombin
-inhibitor) are the same object as far as the oracle is concerned. Within a pocket, windows
-that share a bitstring have centroids 17.21 Å apart on average, against 16.66 Å for random
-pairs: never closer than chance. Effective entropy is 4.10 of 6 bits at `k=3` and 5.59 of
-10 at `k=5`.
+inhibitor) are the same object as far as the oracle is concerned. That ligand-side
+distribution carries **2.74 bits of the 6 available** (the figure quoted in the report).
+Measured instead over the *windows* of a pocket, the effective entropy is 4.10 of 6 bits
+at `k=3` and 5.59 of 10 at `k=5` — the two are different populations, not two estimates of
+the same quantity. Within a pocket, windows that share a bitstring have centroids 17.21 Å
+apart on average, against 16.66 Å for random pairs: never closer than chance.
 
 ### What was ruled out
+
+> The three checks below are reported here only; the report's Section 6.1 argues the same
+> eliminations from the benchmark measurements instead.
 
 **It is not the known defects.** Removing the spurious `PosIonizable` sites (keeping them
 only on ARG/LYS/HIS) moves the correlation from -0.0119 to -0.0122 and leaves the AUC

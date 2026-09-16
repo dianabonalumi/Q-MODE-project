@@ -17,3 +17,10 @@ data/processed/
 # Strutture PDB intere scaricate da make_pockets.py (rigenerabili).
 # I file *_pocket.pdb (tasche estratte) restano tracciati.
 data/raw/????.pdb
+
+# Pagine HTML interattive generate dagli script visualize_*.
+# Le tre usate dalla demo e dalla figura del report restano tracciate.
+*.html
+!chain_1hsg.html
+!features_1hsg_protein.html
+!features_1a08_protein.html
