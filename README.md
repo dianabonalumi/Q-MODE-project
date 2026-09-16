@@ -59,6 +59,7 @@ Q-MODE-project/
 │   ├── visualize_features.py   # Interactive 3D page: pharmacophore sites before/after the SASA filter
 │   ├── visualize_chain.py      # Interactive 3D page: the flat chain, plus the site table
 │   ├── percentile_eval.py      # Benchmark table: ceiling / chance / top-1 percentile per target
+│   ├── diagnose_descriptor.py  # Spearman correlation diagnostic: amplitude-space similarity vs true 3D distance
 │   ├── make_demo_figure.py     # Closing figure of the demo, built from the percentile table
 │   └── make_pockets.py         # Downloads sample PDB structures and crops binding pockets
 ├── data/
@@ -67,7 +68,8 @@ Q-MODE-project/
 ├── report/
 │   ├── demo_runbook.md         # Step-by-step script for the live demo
 │   └── figures/                # Generated figures (PNGs are gitignored)
-├── Report/                     # Project report (PDF)
+├── report_pdf/
+│   └── Q-MODE_Report_EN.pdf    # Project report (full derivation and results)
 ├── requirements.txt
 └── setup.py
 ```
@@ -324,17 +326,13 @@ pytest tests/
 
 ## Scientific Background
 
-The quantum-encoding stage follows the two-step scheme from *"Quantum algorithm for protein-ligand docking sites identification in the interaction space"*: a **first encoding** that binarizes hydrophobicity/H-bond intensity into qubit basis states for Grover search, and a **second encoding** that computes probability amplitudes for amplitude-based Euclidean distance estimation. See `Report/Q-MODE_Report_EN.pdf` for the full derivation and results.
+The quantum-encoding stage follows the two-step scheme from *"Quantum algorithm for protein-ligand docking sites identification in the interaction space"*: a **first encoding** that binarizes hydrophobicity/H-bond intensity into qubit basis states for Grover search, and a **second encoding** that computes probability amplitudes for amplitude-based Euclidean distance estimation. See `report_pdf/Q-MODE_Report_EN.pdf` for the full derivation and results.
 
 The Grover search itself (`qmode/grover/`) is implemented and unit-tested: protein superposition state, oracle, and diffusion operator (Eqs. 5-8 of the paper), run per shift offset on a Qiskit simulator. It is wired into `run_pipeline.py` via `--ligand-pdb`, with the ligand's own (h, hb) profile extracted from a real PDB (`qmode/ligand_reader.py`) rather than hand-typed values.
 
 Two known limitations: the ligand's H-bond intensity has no Abraham data (the table is indexed by amino-acid residue/atom name), so it stays at the neutral default — same open question as the protein-side Abraham assumptions above. And Qiskit's `UnitaryGate` synthesis for the oracle/diffusion operators doesn't scale past ~10 qubits (tens of seconds to minutes per shift offset), which is why `--ligand-max-sites` defaults to 3 (6 qubits).
 
-Not yet implemented: the paper's own SWAP-test-based (amplitude/quantum) ranking of candidate docking sites. `qmode/grover/evaluate.py` covers the same evaluation *goal* — ranking candidates by distance to the ligand — with a classical Euclidean distance between each candidate's site centroid and the ligand's real heavy-atom centroid, rather than a quantum SWAP test on the second encoding's amplitudes. It only applies in benchmark mode (`--ligand-pdb` with a known bound ligand), not prospective screening.
-
-Not yet implemented, and **currently not worth implementing**: the paper's own SWAP-test-based ranking of candidate docking sites. A classical stand-in for it was measured on the benchmark set and carries no localization signal — see [Benchmark Results](#benchmark-results) below.
-
-
+Not yet implemented, and **currently not worth implementing**: the paper's own SWAP-test-based (amplitude/quantum) ranking of candidate docking sites. `qmode/grover/evaluate.py` covers the same evaluation *goal* — ranking candidates by distance to the ligand — with a classical Euclidean distance between each candidate's site centroid and the ligand's real heavy-atom centroid, rather than a quantum SWAP test on the second encoding's amplitudes; it only applies in benchmark mode (`--ligand-pdb` with a known bound ligand), not prospective screening. A classical stand-in for the real SWAP test was measured on the benchmark set and carries no localization signal — see [Benchmark Results](#benchmark-results) below.
 
 ---
 
@@ -460,3 +458,4 @@ with or without their pairwise distances. What distinguishes a pocket is the cav
 in a cavity, so it keeps every exposed site on the protein surface and has no way to
 prefer the concave ones. Replacing it with a cavity detector (fpocket, CASTp) is the
 change that would have to come before any further work on the quantum ranking.
+
