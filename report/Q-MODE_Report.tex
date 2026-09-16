@@ -204,6 +204,9 @@ Each site in \texttt{flat\_chain} is reduced to two scalar channels (\texttt{qub
 \end{cases}
 \]
 
+The split is exhaustive and mutually exclusive by construction: every site carries exactly one pharmacophore type, so the zero in the unused channel is not a missing measurement but the assertion that the site offers no interaction potential of that kind --- \texttt{Aromatic} is routed to $h$ because a ring face presents an apolar contact surface, while \texttt{PosIonizable}/\texttt{NegIonizable} are routed to $hb$, rather than dropped to $(0,0)$, because the dominant directional contact of a charged group is a charge-assisted hydrogen bond.
+Keeping the channels separate also keeps the two intensity scales of Section~\ref{sec:intensity} apart: $h$ carries Crippen LogP contributions and $hb$ carries Abraham $\alpha_2^H/\beta_2^H$ descriptors, which are dimensionally unrelated, so each channel is thresholded against its own distribution and no Crippen value is ever compared against an Abraham one.
+
 \paragraph{First encoding (basis-state binarization).} Each channel is binarized against a per-channel threshold, producing a 2-bit basis state per site:
 \[
 q_h = \begin{cases} 0 & h < h_{\text{thr}} \\ 1 & h \ge h_{\text{thr}} \end{cases}
