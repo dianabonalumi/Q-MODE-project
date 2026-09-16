@@ -55,8 +55,8 @@ That leaves the explanation we found most convincing when we started, which is t
 flattening the pocket from 3D to a 1D chain destroys the spatial arrangement of the
 sites, so that a window of consecutive positions is an arbitrary collection with no
 counterpart on the protein surface. Our own measurements do not support it. At $k=5$ the
-median window span is 7.63~\AA{} and the median radius of gyration is 3.09~\AA{}, and only
-25.8\% of windows are wider than 10~\AA{}. Consecutive sites do form compact local
+median window span is 7.60~\AA{} and the median radius of gyration is 3.06~\AA{}, and only
+26.1\% of windows are wider than 10~\AA{}. Consecutive sites do form compact local
 patches, roughly the size of a small ligand, which means chain assembly and topological
 ordering largely do what we designed them to do. A good deal of the geometric information
 is therefore still there, implicitly, in the windows the search looks at, and the
@@ -303,7 +303,8 @@ of \texttt{validate\_step5.py} fails on 31/31 pockets, but the test is written
 incorrectly. It compares site sequences after the SASA filter has run, and that filter
 removes a different number of sites from each copy of a residue type, so the sequences
 cannot be expected to match. Measured before the filter, the inconsistencies drop from
-141 to 47 and disappear for the residues whose shape is fixed. The ones left are on
+129 to 27 and the pockets that fail at all drop from 31 to 14; they disappear entirely
+for the residues whose shape is fixed. The ones left are on
 residues that can bend, and follow from deduplication depending on the shape the residue
 happens to take, which is the intended behaviour.
 
@@ -410,8 +411,8 @@ merges donors with acceptors and positive with negative groups, which removes th
 complementarity that decides whether a ligand binds. One thing our measurements do not
 support is the explanation we expected to find. The failure cannot be blamed on losing
 the spatial arrangement of the sites when we flatten the pocket into a chain, because the
-windows turn out to be compact patches, with a median span of 7.63~\AA{} and a radius of
-gyration of 3.09~\AA{}, so their local geometry is largely preserved and the descriptor
+windows turn out to be compact patches, with a median span of 7.60~\AA{} and a radius of
+gyration of 3.06~\AA{}, so their local geometry is largely preserved and the descriptor
 fails on windows that are spatially sensible. What the representation never encodes is
 how enclosed a region is, which is the property that separates a pocket from any other
 piece of surface, and the one that Section~\ref{sec:surface-filter} already noted a globally
