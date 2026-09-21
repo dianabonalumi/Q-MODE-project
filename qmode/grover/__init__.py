@@ -10,6 +10,8 @@ from qmode.grover.search import (
 from qmode.grover.evaluate import (
     compute_window_centroid,
     evaluate_candidates,
+    all_window_distances,
+    random_control,
 )
 
 __all__ = [
@@ -22,4 +24,6 @@ __all__ = [
     "search_docking_sites",
     "compute_window_centroid",
     "evaluate_candidates",
+    "all_window_distances",
+    "random_control",
 ]
