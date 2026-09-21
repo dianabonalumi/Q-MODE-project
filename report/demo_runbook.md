@@ -71,13 +71,33 @@ What to point at, in the order it appears:
 | `Total segments: 124` | the search space |
 | `Ligand: B902_MK1` | the real ligand, extracted and run through the same pipeline |
 | `Shift/Site/Prob.` | Grover: 3 windows above the 1/N threshold |
-| `Validation` | real distance from the ligand |
+| `Validation` + `#1/#2/#3` | real distance from the ligand, and where Grover's ranking had put each one |
+| `Random control` | the same three windows, but drawn blindly from the chain |
+| `Is it noise?` | the two compared, with an exact p-value |
 
 Probabilities wobble by a few thousandths between runs (Grover samples at finite shots):
 the candidates, their order and the distances stay identical.
 
 The ending tells itself: the top two candidates are **A25_ASP and B25_ASP**, the two
 catalytic aspartates of HIV protease — the active site, the one every inhibitor targets.
+
+### The control, at the bottom of the same screen
+
+Do not stop at the aspartates. The last block draws **three windows at random** from the
+same chain and puts them next to the candidates:
+
+> Grover's best of 3 is at 6.058 Å. Three windows picked blindly — no quantum search, no
+> ranking — give 7.330 Å on the median. And the draw on screen contains one at **6.565 Å**,
+> half an ångström behind the answer the whole pipeline worked for.
+
+`P(3 random windows do at least as well) = 0.323`: read it as a p-value, so the candidates
+are **not distinguishable from chance** on this target. The number is exact — computed in
+closed form from all 124 window distances, not sampled — so it does not move between runs
+and `--control-seed` only changes *which* three rows are displayed, never the verdict. Say
+that before you are asked.
+
+This is the bridge into Step 4: one target already shows it, the benchmark shows it holds
+everywhere.
 
 ---
 
