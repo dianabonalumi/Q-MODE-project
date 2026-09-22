@@ -19,6 +19,45 @@ def window_interactivity(window: List[dict]) -> float:
     return sum(sum(get_h_hb_intensities(site)) for site in window)
 
 
+def tile_offset_ranked(
+    flat_chain: List[dict],
+    ligand_size: int,
+    offset: int,
+    h_thr: float,
+    hb_thr: float,
+) -> Tuple[List[str], Dict[str, List[int]]]:
+    """Non-overlapping windows of `ligand_size` sites starting at `offset`
+    (Fig. 6-7). Returns the unique bitstrings and, for each, EVERY index
+    that produces it, ordered by descending interactivity (sum of h/hb
+    intensity across the window's sites), ties broken by position.
+
+    The head of each list is what `tile_offset` returns; the tail is what
+    the one-window-per-bitstring collapse throws away. Windows inside one
+    offset are non-overlapping, so those extra positions are disjoint
+    patches, not shifts of the same one."""
+    n_sites = len(flat_chain)
+    scored: Dict[str, List[Tuple[float, int]]] = {}
+    order: List[str] = []
+
+    start = offset
+    while start + ligand_size <= n_sites:
+        window = flat_chain[start:start + ligand_size]
+        bitstring = "".join(
+            first_encoding(*get_h_hb_intensities(site), h_thr, hb_thr)
+            for site in window
+        )
+        if bitstring not in scored:
+            order.append(bitstring)
+            scored[bitstring] = []
+        scored[bitstring].append((window_interactivity(window), start))
+        start += ligand_size
+
+    return order, {
+        bitstring: [pos for _, pos in sorted(hits, key=lambda t: (-t[0], t[1]))]
+        for bitstring, hits in scored.items()
+    }
+
+
 def tile_offset(
     flat_chain: List[dict],
     ligand_size: int,
@@ -30,29 +69,10 @@ def tile_offset(
     (Fig. 6-7). Returns the unique bitstrings and, for each, the index of
     its most interactive occurrence (highest sum of h/hb intensity across
     the window's sites) — not just whichever window was seen last."""
-    n_sites = len(flat_chain)
-    best_position: Dict[str, int] = {}
-    best_score: Dict[str, float] = {}
-    order: List[str] = []
-
-    start = offset
-    while start + ligand_size <= n_sites:
-        window = flat_chain[start:start + ligand_size]
-        bitstring = "".join(
-            first_encoding(*get_h_hb_intensities(site), h_thr, hb_thr)
-            for site in window
-        )
-        score = window_interactivity(window)
-        if bitstring not in best_position:
-            order.append(bitstring)
-            best_position[bitstring] = start
-            best_score[bitstring] = score
-        elif score > best_score[bitstring]:
-            best_position[bitstring] = start
-            best_score[bitstring] = score
-        start += ligand_size
-
-    return order, best_position
+    order, positions = tile_offset_ranked(
+        flat_chain, ligand_size, offset, h_thr, hb_thr
+    )
+    return order, {bitstring: pos[0] for bitstring, pos in positions.items()}
 
 
 def build_superposition(unique_bitstrings: List[str], n_qubits: int) -> np.ndarray:
@@ -118,11 +138,19 @@ def search_docking_sites(
     h_thr: float,
     hb_thr: float,
     shots: int = 4096,
+    per_offset: int = 1,
 ) -> List[dict]:
     """Searches every shift offset; returns windows with probability >= the
     1/N threshold, sorted by descending interactivity score (sum of h/hb
     intensity across the window's sites) so the most interactive matching
-    window comes first."""
+    window comes first.
+
+    `per_offset` is how many matching windows each offset may contribute,
+    the most interactive first (default 1, the historical behaviour). It
+    widens the candidate set — up to `ligand_size * per_offset` windows —
+    without touching the circuit: the superposition is built over the
+    UNIQUE bitstrings of the tiling, so extra occurrences of the same
+    bitstring are one entry there whatever this is set to."""
     if len(ligand_hbs) != ligand_size:
         raise ValueError(
             f"ligand_hbs deve avere {ligand_size} coppie (h, hb), trovate {len(ligand_hbs)}"
@@ -136,7 +164,7 @@ def search_docking_sites(
     candidates: List[dict] = []
 
     for offset in range(ligand_size):
-        unique_bitstrings, best_position = tile_offset(
+        unique_bitstrings, positions = tile_offset_ranked(
             flat_chain, ligand_size, offset, h_thr, hb_thr
         )
         if not unique_bitstrings:
@@ -152,20 +180,23 @@ def search_docking_sites(
         probabilities = run_grover_circuit(s_vector, oracle, diffusion, n_qubits, shots=shots)
         matching_probability = probabilities.get(ligand_bitstring, 0.0)
 
-        if matching_probability >= threshold and ligand_bitstring in best_position:
-            window_start = best_position[ligand_bitstring]
-            window_sites = flat_chain[window_start:window_start + ligand_size]
-            residues = list(dict.fromkeys(s["residue"] for s in window_sites))
-            candidates.append({
-                "shift_offset": offset,
-                "window_start_index": window_start,
-                "interactivity_score": round(window_interactivity(window_sites), 3),
-                "residues": residues,
-                "ligand_bitstring": ligand_bitstring,
-                "matching_probability": matching_probability,
-                "threshold": threshold,
-                "n_unique_states": n,
-            })
+        if matching_probability >= threshold and ligand_bitstring in positions:
+            for rank, window_start in enumerate(
+                positions[ligand_bitstring][:per_offset], start=1
+            ):
+                window_sites = flat_chain[window_start:window_start + ligand_size]
+                residues = list(dict.fromkeys(s["residue"] for s in window_sites))
+                candidates.append({
+                    "shift_offset": offset,
+                    "rank_in_offset": rank,
+                    "window_start_index": window_start,
+                    "interactivity_score": round(window_interactivity(window_sites), 3),
+                    "residues": residues,
+                    "ligand_bitstring": ligand_bitstring,
+                    "matching_probability": matching_probability,
+                    "threshold": threshold,
+                    "n_unique_states": n,
+                })
 
     candidates.sort(key=lambda c: c["interactivity_score"], reverse=True)
     return candidates

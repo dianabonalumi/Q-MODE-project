@@ -1,5 +1,6 @@
 from qmode.grover.search import (
     tile_offset,
+    tile_offset_ranked,
     window_interactivity,
     build_superposition,
     build_oracle,
@@ -16,6 +17,7 @@ from qmode.grover.evaluate import (
 
 __all__ = [
     "tile_offset",
+    "tile_offset_ranked",
     "window_interactivity",
     "build_superposition",
     "build_oracle",
