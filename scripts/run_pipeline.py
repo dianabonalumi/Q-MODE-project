@@ -117,7 +117,9 @@ def run_pipeline(
     ligand_pdb=None,
     ligand_code=None,
     ligand_max_sites=3,
-    max_rows=None
+    max_rows=None,
+    control_size=3,
+    control_seed=0
 ):
     print(f"\n{'='*60}")
     print(f"  Pipeline Mapping: {os.path.basename(pdb_path)}")
@@ -260,7 +262,8 @@ def run_pipeline(
     grover_candidates = None
     if ligand_pdb is not None:
         from qmode.qubit_chain import compute_h_hb_thresholds
-        from qmode.grover import search_docking_sites, evaluate_candidates
+        from qmode.grover import (search_docking_sites, evaluate_candidates,
+                                  random_control)
 
         print(f"\n{'-'*60}")
         print(f"  Ligand extracted from: {os.path.basename(ligand_pdb)}")
@@ -297,6 +300,7 @@ def run_pipeline(
                     flat_chain, ligand_hbs, grover_ligand_size, h_thr, hb_thr
                 )
 
+                ctrl = None
                 if grover_candidates:
                     print(f"\n  {'Shift':6s}  {'Site':6s}  {'Prob.':8s}  {'Thresh.':8s}  {'Score':7s}  Residues")
                     print(f"  {'-'*6}  {'-'*6}  {'-'*8}  {'-'*8}  {'-'*7}  {'-'*20}")
@@ -307,7 +311,7 @@ def run_pipeline(
 
                     # evaluate_candidates re-sorts by distance, so remember which
                     # candidate the search actually ranked first before that happens.
-                    top1_start = grover_candidates[0]["window_start_index"]
+                    ranked_starts = [c["window_start_index"] for c in grover_candidates]
 
                     ligand_centroids = compute_all_ligand_centroids(ligand_pdb, ligand_rec.res_name)
                     grover_candidates = evaluate_candidates(
@@ -319,9 +323,36 @@ def run_pipeline(
                     print(f"  {'Site':6s}  {'Dist. (Å)':10s}  Residues")
                     print(f"  {'-'*6}  {'-'*10}  {'-'*20}")
                     for c in grover_candidates:
-                        mark = "   <- top-1" if c["window_start_index"] == top1_start else ""
+                        rank = ranked_starts.index(c["window_start_index"]) + 1
                         print(f"  {c['window_start_index']:6d}  {c['distance_to_ligand_A']:10.3f}  "
-                              f"{', '.join(c['residues'])}{mark}")
+                              f"{', '.join(c['residues'])}   <- #{rank}")
+
+                    # Controllo: le stesse N finestre, ma pescate a caso. Serve a
+                    # rispondere alla domanda "e' rumore?" sul singolo bersaglio,
+                    # senza rimandare al benchmark.
+                    ctrl = random_control(
+                        flat_chain, ligand_centroids, grover_ligand_size,
+                        grover_best=grover_candidates[0]["distance_to_ligand_A"],
+                        n=control_size, seed=control_seed)
+                    print(f"\n  Random control: {ctrl['n']} windows drawn uniformly from "
+                          f"the {ctrl['n_windows']} windows of the chain (seed {control_seed})")
+                    print(f"  {'Site':6s}  {'Dist. (Å)':10s}  Residues")
+                    print(f"  {'-'*6}  {'-'*10}  {'-'*20}")
+                    for start, d in zip(ctrl["shown"], ctrl["shown_dists"]):
+                        res = list(dict.fromkeys(
+                            s["residue"] for s in
+                            flat_chain[start:start + grover_ligand_size]))
+                        print(f"  {start:6d}  {d:10.3f}  {', '.join(res)}")
+
+                    verdict = ("indistinguishable from chance"
+                               if ctrl["p_value"] > 0.05 else "better than chance")
+                    print(f"\n  Is it noise?  best of Grover's {len(grover_candidates)} "
+                          f"candidates = {ctrl['grover_best']:.3f} Å;  best of {ctrl['n']} "
+                          f"random windows = {ctrl['median_best_of_n']:.3f} Å (median)")
+                    print(f"  P({ctrl['n']} random windows do at least as well) = "
+                          f"{ctrl['p_value']:.3f}  ->  {verdict}")
+                    print(f"  (exact, from all {ctrl['n_windows']} window distances — "
+                          f"not sampled; the seed only picks which rows are shown)")
                 else:
                     print("\n  No candidate site found for the given ligand.")
 
@@ -333,6 +364,7 @@ def run_pipeline(
                             "ligand_hbs": ligand_hbs,
                             "ligand_size": grover_ligand_size,
                             "candidates": grover_candidates,
+                            "random_control": ctrl,
                         }, f, indent=2)
                     print(f"\n  Grover search JSON saved to: {gjson_path}")
 
@@ -494,6 +526,16 @@ if __name__ == "__main__":
                              "seconds/minutes per shift) — raise it only if you "
                              "are willing to wait.")
 
+    parser.add_argument("--control-size", type=int, default=3,
+                        help="How many windows the random control draws for "
+                             "comparison with the Grover candidates (default 3, "
+                             "i.e. the same number Grover returns at "
+                             "--ligand-max-sites 3).")
+    parser.add_argument("--control-seed", type=int, default=0,
+                        help="Seed picking WHICH random windows are displayed "
+                             "(default 0). The p-value is exact and does not "
+                             "depend on it.")
+
     parser.add_argument("--max-rows", type=int, default=None,
                         help="Truncate the two long tables (flat sequence and "
                              "quantum encoding) to their first N rows; on a "
@@ -513,5 +555,7 @@ if __name__ == "__main__":
         ligand_pdb=args.ligand_pdb,
         ligand_code=args.ligand_code,
         ligand_max_sites=args.ligand_max_sites,
-        max_rows=args.max_rows
+        max_rows=args.max_rows,
+        control_size=args.control_size,
+        control_seed=args.control_seed
     )

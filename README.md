@@ -216,6 +216,8 @@ python scripts/plot_residue_chain.py --pdb data/raw/3ptb_pocket.pdb --chain A --
 | `--ligand-pdb` | `None` | Path to a PDB file containing the ligand's HETATM records (e.g. the full structure downloaded from PDB). When set, runs Grover search with the extracted ligand |
 | `--ligand-code` | `None` | 3-letter ligand code to disambiguate when `--ligand-pdb` has multiple non-water HETATM groups. Default: auto-picks the group with the most heavy atoms |
 | `--ligand-max-sites` | `3` | Max number of ligand pharmacophore sites used by Grover (6 qubits). Raising this past ~5 sites (10+ qubits) makes oracle/diffusion synthesis very slow in Qiskit |
+| `--control-size` | `3` | How many windows the random control draws for comparison with the Grover candidates — by default the same number Grover returns |
+| `--control-seed` | `0` | Picks *which* random windows get displayed. The p-value is exact and does not depend on it |
 | `--max-rows` | `None` | Truncate the two long tables (flat sequence and quantum encoding) to their first N rows. On a typical pocket each is 120+ rows; meant for presenting on a projector. Default prints everything |
 
 ---
