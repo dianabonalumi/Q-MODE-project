@@ -118,7 +118,8 @@ def run_pipeline(
     ligand_code=None,
     ligand_max_sites=3,
     max_rows=None,
-    control_size=3,
+    candidates_per_offset=1,
+    control_size=None,
     control_seed=0
 ):
     print(f"\n{'='*60}")
@@ -297,7 +298,8 @@ def run_pipeline(
                 print(f"  h_thr: {h_thr:.3f}, hb_thr: {hb_thr:.3f}")
 
                 grover_candidates = search_docking_sites(
-                    flat_chain, ligand_hbs, grover_ligand_size, h_thr, hb_thr
+                    flat_chain, ligand_hbs, grover_ligand_size, h_thr, hb_thr,
+                    per_offset=candidates_per_offset
                 )
 
                 ctrl = None
@@ -329,11 +331,15 @@ def run_pipeline(
 
                     # Controllo: le stesse N finestre, ma pescate a caso. Serve a
                     # rispondere alla domanda "e' rumore?" sul singolo bersaglio,
-                    # senza rimandare al benchmark.
+                    # senza rimandare al benchmark. Di default ne pesca TANTE
+                    # QUANTI sono i candidati: confrontare il migliore di 9 con
+                    # il migliore di 3 regalerebbe a Grover un vantaggio di solo
+                    # conteggio.
                     ctrl = random_control(
                         flat_chain, ligand_centroids, grover_ligand_size,
                         grover_best=grover_candidates[0]["distance_to_ligand_A"],
-                        n=control_size, seed=control_seed)
+                        n=control_size or len(grover_candidates),
+                        seed=control_seed)
                     print(f"\n  Random control: {ctrl['n']} windows drawn uniformly from "
                           f"the {ctrl['n_windows']} windows of the chain (seed {control_seed})")
                     print(f"  {'Site':6s}  {'Dist. (Å)':10s}  Residues")
@@ -526,11 +532,18 @@ if __name__ == "__main__":
                              "seconds/minutes per shift) — raise it only if you "
                              "are willing to wait.")
 
-    parser.add_argument("--control-size", type=int, default=3,
+    parser.add_argument("--candidates-per-offset", type=int, default=1,
+                        help="How many matching windows each shift offset may "
+                             "return, most interactive first (default 1). The "
+                             "tiling inside one offset is non-overlapping, so "
+                             "the extra windows are disjoint patches; the "
+                             "circuit is unchanged, since the superposition is "
+                             "built over the tiling's UNIQUE bitstrings.")
+    parser.add_argument("--control-size", type=int, default=None,
                         help="How many windows the random control draws for "
-                             "comparison with the Grover candidates (default 3, "
-                             "i.e. the same number Grover returns at "
-                             "--ligand-max-sites 3).")
+                             "comparison with the Grover candidates (default: "
+                             "as many as Grover returned, so the two sides get "
+                             "the same number of draws).")
     parser.add_argument("--control-seed", type=int, default=0,
                         help="Seed picking WHICH random windows are displayed "
                              "(default 0). The p-value is exact and does not "
@@ -556,6 +569,7 @@ if __name__ == "__main__":
         ligand_code=args.ligand_code,
         ligand_max_sites=args.ligand_max_sites,
         max_rows=args.max_rows,
+        candidates_per_offset=args.candidates_per_offset,
         control_size=args.control_size,
         control_seed=args.control_seed
     )

@@ -1,7 +1,7 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from qmode.grover import tile_offset, search_docking_sites
+from qmode.grover import tile_offset, tile_offset_ranked, search_docking_sites
 
 H_THR = 1.0
 HB_THR = 1.0
@@ -68,3 +68,50 @@ def test_ligand_size_mismatch_raises():
     with pytest.raises(ValueError):
         search_docking_sites(FLAT_CHAIN, [(1.0, 1.0)], ligand_size=2,
                               h_thr=H_THR, hb_thr=HB_THR)
+
+
+# Same bitstring three times inside one offset, with different interactivity:
+# offset 0 tiles it into [0-1] (score 4), [2-3] (score 10), [4-5] (score 6),
+# all "1010". This is what the one-window-per-bitstring collapse discards.
+REPEATED_CHAIN = [
+    _site("R1", "Hydrophobe", 2.0),
+    _site("R1", "Hydrophobe", 2.0),
+    _site("R2", "Hydrophobe", 5.0),
+    _site("R2", "Hydrophobe", 5.0),
+    _site("R3", "Hydrophobe", 3.0),
+    _site("R3", "Hydrophobe", 3.0),
+]
+
+
+def test_tile_offset_ranked_orders_every_occurrence():
+    unique, positions = tile_offset_ranked(REPEATED_CHAIN, ligand_size=2, offset=0,
+                                           h_thr=H_THR, hb_thr=HB_THR)
+    assert unique == ["1010"]
+    assert positions == {"1010": [2, 4, 0]}   # descending interactivity
+
+
+def test_tile_offset_returns_the_head_of_the_ranking():
+    _, positions = tile_offset_ranked(REPEATED_CHAIN, 2, 0, H_THR, HB_THR)
+    _, best = tile_offset(REPEATED_CHAIN, 2, 0, H_THR, HB_THR)
+    assert best == {b: p[0] for b, p in positions.items()}
+
+
+def test_per_offset_widens_the_candidate_set_without_touching_the_circuit():
+    ligand_hbs = [(2.0, 0.0), (2.0, 0.0)]          # bitstring "1010"
+    one = search_docking_sites(REPEATED_CHAIN, ligand_hbs, ligand_size=2,
+                               h_thr=H_THR, hb_thr=HB_THR, shots=4096)
+    two = search_docking_sites(REPEATED_CHAIN, ligand_hbs, ligand_size=2,
+                               h_thr=H_THR, hb_thr=HB_THR, shots=4096, per_offset=2)
+
+    # default is the historical one-per-offset behaviour
+    assert len(one) == 2 and {c["window_start_index"] for c in one} == {2, 3}
+    assert all(c["rank_in_offset"] == 1 for c in one)
+
+    # offset 0 adds start 4, offset 1 adds start 1
+    assert {c["window_start_index"] for c in two} == {2, 3, 4, 1}
+    assert [c["rank_in_offset"] for c in two if c["shift_offset"] == 0] == [1, 2]
+
+    # the superposition is built over the tiling's unique bitstrings, so the
+    # quantum stage sees exactly the same problem either way
+    assert ({(c["shift_offset"], c["n_unique_states"]) for c in one}
+            == {(c["shift_offset"], c["n_unique_states"]) for c in two})
